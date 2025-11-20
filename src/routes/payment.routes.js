@@ -1,16 +1,35 @@
 import express from "express";
-import { createOrder, verifyPayment, webhookHandler } from "../controllers/payment.controller.js";
+import {
+  createPlan,
+  getAllPlans,
+  getPlanById,
+  createSubscription,
+  verifySubscriptionPayment,
+  getUserSubscriptions,
+  getSubscription,
+  cancelSubscription,
+  pauseSubscription,
+  resumeSubscription,
+  subscriptionWebhook,
+} from "../controllers/payment.controller.js"
 
-const router = express.Router()
+const router = express.Router();
 
+// Plan routes
+router.post("/plans/create", createPlan);
+router.get("/plans", getAllPlans);
+router.get("/plans/:planId", getPlanById);
 
-// Create Razorpay Order
-router.post("/create-order", createOrder);
-
-// Verify payment (frontend callback)
-router.post("/verify", verifyPayment);
-
-// Razorpay webhook (must handle RAW body)
-router.post("/webhook", webhookHandler);
+// Subscription routes
+router.post("/create", createSubscription);
+router.post("/verify", verifySubscriptionPayment);
+router.get("/user/all", getUserSubscriptions);
+router.get("/:subscriptionId",  getSubscription);
+router.post("/:subscriptionId/cancel",  cancelSubscription);
+router.post("/:subscriptionId/pause",  pauseSubscription);
+router.post("/:subscriptionId/resume", resumeSubscription);
 
 export default router;
+
+
+export const webhookHandler = subscriptionWebhook;
