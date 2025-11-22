@@ -3,6 +3,7 @@ import {
   createPlan,
   getAllPlans,
   getPlanById,
+  deletePlan,
   createSubscription,
   verifySubscriptionPayment,
   getUserSubscriptions,
@@ -11,26 +12,37 @@ import {
   pauseSubscription,
   resumeSubscription,
   subscriptionWebhook,
-} from "../controllers/payment.controller.js"
+} from "../controllers/payment.controller.js";
 import { verifyJWT } from "../middleware/auth.Middleware.js";
 
 const router = express.Router();
 
+// =====================
 // Plan routes
-router.post("/plans/create", createPlan);
-router.get("/plans", getAllPlans);
-router.get("/plans/:planId", getPlanById);
+// =====================
 
+// (optional: protect with admin middleware later)
+router.post("/plans/create", verifyJWT, createPlan);
+router.get("/plans", verifyJWT, getAllPlans);
+router.get("/plans/:planId", verifyJWT, getPlanById);
+router.delete("/plans/:planId", verifyJWT, deletePlan);
+
+// =====================
 // Subscription routes
-router.post("/create",verifyJWT, createSubscription);
-router.post("/verify", verifySubscriptionPayment);
-router.get("/user/all", getUserSubscriptions);
-router.get("/:subscriptionId",  getSubscription);
-router.post("/:subscriptionId/cancel",  cancelSubscription);
-router.post("/:subscriptionId/pause",  pauseSubscription);
-router.post("/:subscriptionId/resume", resumeSubscription);
+// =====================
+
+router.post("/create", verifyJWT, createSubscription);
+router.post("/verify", verifySubscriptionPayment); // Razorpay callback → no auth
+router.get("/user/all", verifyJWT, getUserSubscriptions);
+router.get("/:subscriptionId", verifyJWT, getSubscription);
+router.post("/:subscriptionId/cancel", verifyJWT, cancelSubscription);
+router.post("/:subscriptionId/pause", verifyJWT, pauseSubscription);
+router.post("/:subscriptionId/resume", verifyJWT, resumeSubscription);
+
+// =====================
+// Webhook route (no auth)
+// =====================
+
+router.post("/webhook/razorpay/subscription", subscriptionWebhook);
 
 export default router;
-
-
-export const webhookHandler = subscriptionWebhook;
