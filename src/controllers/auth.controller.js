@@ -23,7 +23,7 @@ export const generateAccessAndRefreshToken = async (userId) => {
 
 
 export const registerUser = asyncHandler(async (req, res) => {
-  let { name, email, phone, password } = req.body;
+  let { name, email, password } = req.body;
 
   const errors = [];
 
@@ -35,10 +35,10 @@ export const registerUser = asyncHandler(async (req, res) => {
     errors.push({ field: "name", message: "Name is required" });
   }
 
-  if (!email && !phone) {
+  if (!email) {
     errors.push({
-      field: "emailOrPhone",
-      message: "Email or phone number is required",
+      field: "email",
+      message: "Email is required",
     });
   }
 
@@ -50,41 +50,19 @@ export const registerUser = asyncHandler(async (req, res) => {
     throw new ApiError(400, "Required fields are missing", errors);
   }
 
-  // Check existing user (by email or phone)
-  const matchConditions = [];
-  if (email) matchConditions.push({ email });
-  if (phone) matchConditions.push({ phone });
-
-  const existingUser =
-    matchConditions.length > 0
-      ? await User.findOne({ $or: matchConditions })
-      : null;
+  // Check existing user by email only
+  const existingUser = await User.findOne({ email });
 
   if (existingUser) {
-    const conflictErrors = [];
-
-    if (email && existingUser.email === email) {
-      conflictErrors.push({
-        field: "email",
-        message: "User with this email already exists",
-      });
-    }
-
-    if (phone && existingUser.phone === phone) {
-      conflictErrors.push({
-        field: "phone",
-        message: "User with this phone number already exists",
-      });
-    }
-
-    throw new ApiError(409, "User already exists", conflictErrors);
+    throw new ApiError(409, "User already exists", [
+      { field: "email", message: "User with this email already exists" },
+    ]);
   }
 
-  // Create user (password will be hashed by pre-save hook)
+  // Create user
   const user = await User.create({
     name,
     email,
-    phone,
     password,
   });
 
@@ -92,26 +70,24 @@ export const registerUser = asyncHandler(async (req, res) => {
     throw new ApiError(500, "Something went wrong while creating the user");
   }
 
-  // Tokens
   const { accessToken, refreshToken } = await generateAccessAndRefreshToken(
     user._id
   );
 
-  // Fetch safe user object
+  // Return safe user (no password, no refreshToken)
   const createdUser = await User.findById(user._id).select(
-    " name phone role  status  "
+    "name email role status"
   );
 
   if (!createdUser) {
     throw new ApiError(500, "User creation failed");
   }
 
-  // Cookie options
   const options = {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: process.env.NODE_ENV === "production" ? "None" : "Lax",
-    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    maxAge: 7 * 24 * 60 * 60 * 1000,
   };
 
   return res
@@ -131,17 +107,17 @@ export const registerUser = asyncHandler(async (req, res) => {
 
 
 export const loginUser = asyncHandler(async (req, res) => {
-  let { email, phone, password } = req.body;
+  let { email, password } = req.body;
 
   const errors = [];
 
   if (typeof email === "string") email = email.toLowerCase().trim();
 
   // Basic validation
-  if (!email && !phone) {
+  if (!email) {
     errors.push({
-      field: "emailOrPhone",
-      message: "Email or phone number is required",
+      field: "email",
+      message: "Email is required",
     });
   }
 
@@ -153,14 +129,8 @@ export const loginUser = asyncHandler(async (req, res) => {
     throw new ApiError(400, "Required fields are missing", errors);
   }
 
-  // Build query (login via email or phone)
-  const matchConditions = [];
-  if (email) matchConditions.push({ email });
-  if (phone) matchConditions.push({ phone });
-
-  const user = await User.findOne(
-    matchConditions.length > 0 ? { $or: matchConditions } : {}
-  ).select("+password"); // need password to compare
+  // Find user by email
+  const user = await User.findOne({ email }).select("+password");
 
   if (!user) {
     throw new ApiError(404, "User does not exist");
@@ -187,7 +157,7 @@ export const loginUser = asyncHandler(async (req, res) => {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: process.env.NODE_ENV === "production" ? "None" : "Lax",
-    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    maxAge: 7 * 24 * 60 * 60 * 1000,
   };
 
   return res

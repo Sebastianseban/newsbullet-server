@@ -14,24 +14,17 @@ const userSchema = new mongoose.Schema(
     email: {
       type: String,
       unique: true,
-      sparse: true,
+      required: [true, "Email is required"],
       lowercase: true,
       trim: true,
       index: true,
       match: [/^\S+@\S+\.\S+$/, "Please provide a valid email address"],
     },
-    phone: {
-      type: String,
-      trim: true,
-      unique: true,
-      sparse: true,
-      index: true,
-    },
     password: {
       type: String,
       required: [true, "Password is required"],
       minlength: [6, "Password must be at least 6 characters"],
-      select: false, // don't return password by default
+      select: false,
     },
     role: {
       type: String,
@@ -46,7 +39,7 @@ const userSchema = new mongoose.Schema(
       index: true,
     },
 
-    // Store Razorpay customer id at user level
+    // Store Razorpay customer id at user level (optional)
     razorpayCustomerId: {
       type: String,
       index: true,
@@ -63,9 +56,7 @@ const userSchema = new mongoose.Schema(
 // MIDDLEWARE
 // ---------------------------------------------
 
-// Hash password before save
 userSchema.pre("save", async function (next) {
-  // Only hash if password is new/modified
   if (!this.isModified("password")) return next();
 
   try {
@@ -80,12 +71,10 @@ userSchema.pre("save", async function (next) {
 // INSTANCE METHODS
 // ---------------------------------------------
 
-// ✅ Compare password
 userSchema.methods.isPasswordCorrect = async function (password) {
   return bcrypt.compare(password, this.password);
 };
 
-// ✅ Generate JWT Access Token
 userSchema.methods.generateAccessToken = function () {
   return jwt.sign(
     {
@@ -99,7 +88,6 @@ userSchema.methods.generateAccessToken = function () {
   );
 };
 
-// ✅ Generate Refresh Token
 userSchema.methods.generateRefreshToken = function () {
   return jwt.sign({ _id: this._id }, process.env.REFRESH_TOKEN_SECRET, {
     expiresIn: process.env.REFRESH_TOKEN_EXPIRY || "7d",

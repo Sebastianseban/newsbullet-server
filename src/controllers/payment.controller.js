@@ -7,6 +7,7 @@ import { razorpay } from "../utils/razorpayInstance.js";
 import { ApiError } from "../utils/ApiError.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
+import Plan from "../models/Plan.js";
 import crypto from "crypto";
 
 // Helper to convert Razorpay UNIX timestamps (seconds) to JS Date
@@ -38,6 +39,7 @@ export const createPlan = asyncHandler(async (req, res) => {
   }
 
   try {
+    // 1) Create plan in Razorpay
     const plan = await razorpay.plans.create({
       period,
       interval: Number(interval),
@@ -49,14 +51,34 @@ export const createPlan = asyncHandler(async (req, res) => {
       },
     });
 
-    return res
-      .status(201)
-      .json(new ApiResponse(201, plan, "Plan created successfully"));
+    // 2) Save plan metadata in Mongo (our own system)
+    const dbPlan = await Plan.create({
+      razorpayPlanId: plan.id,
+      name: plan.item.name,
+      amount: plan.item.amount / 100, // store as rupees
+      currency: plan.item.currency,
+      period: plan.period,
+      interval: plan.interval,
+      description: plan.item.description,
+      isActive: true,
+    });
+
+    return res.status(201).json(
+      new ApiResponse(
+        201,
+        {
+          razorpay: plan,
+          plan: dbPlan,
+        },
+        "Plan created successfully"
+      )
+    );
   } catch (err) {
     console.error("Razorpay plan creation failed:", err);
     throw new ApiError(500, `Failed to create plan: ${err.message}`);
   }
 });
+
 
 /**
  * Get all plans
@@ -64,10 +86,37 @@ export const createPlan = asyncHandler(async (req, res) => {
  */
 export const getAllPlans = asyncHandler(async (req, res) => {
   try {
-    const plans = await razorpay.plans.all();
-    return res
-      .status(200)
-      .json(new ApiResponse(200, plans, "Plans fetched successfully"));
+    // 1) Get active plans from our DB
+    const activePlans = await Plan.find({ isActive: true }).lean();
+
+    if (!activePlans.length) {
+      return res
+        .status(200)
+        .json(new ApiResponse(200, [], "No active plans found"));
+    }
+
+    const activeIds = new Set(activePlans.map((p) => p.razorpayPlanId));
+
+    // 2) Fetch all plans from Razorpay
+    const razorpayPlans = await razorpay.plans.all();
+
+    // 3) Keep only those which are active in our DB
+    const filteredRazorpayPlans = razorpayPlans.items.filter((p) =>
+      activeIds.has(p.id)
+    );
+
+    // 4) Merge DB meta + Razorpay data
+    const merged = filteredRazorpayPlans.map((rp) => {
+      const db = activePlans.find((p) => p.razorpayPlanId === rp.id);
+      return {
+        razorpay: rp,
+        meta: db,
+      };
+    });
+
+    return res.status(200).json(
+      new ApiResponse(200, merged, "Active plans fetched successfully")
+    );
   } catch (err) {
     console.error("Failed to fetch plans:", err);
     throw new ApiError(500, "Failed to fetch plans");
@@ -83,15 +132,46 @@ export const getPlanById = asyncHandler(async (req, res) => {
 
   try {
     const plan = await razorpay.plans.fetch(planId);
-    return res
-      .status(200)
-      .json(new ApiResponse(200, plan, "Plan fetched successfully"));
+    const dbPlan = await Plan.findOne({ razorpayPlanId: planId }).lean();
+
+    return res.status(200).json(
+      new ApiResponse(
+        200,
+        {
+          razorpay: plan,
+          meta: dbPlan,
+        },
+        "Plan fetched successfully"
+      )
+    );
   } catch (err) {
     console.error("Failed to fetch plan:", err);
     throw new ApiError(404, "Plan not found");
   }
 });
+/**
+ * Soft delete / deactivate a plan
+ * DELETE /api/subscriptions/plans/:planId
+ *
+ * planId = Razorpay plan id
+ */
+export const deletePlan = asyncHandler(async (req, res) => {
+  const { planId } = req.params;
 
+  const updated = await Plan.findOneAndUpdate(
+    { razorpayPlanId: planId },
+    { isActive: false },
+    { new: true }
+  );
+
+  if (!updated) {
+    throw new ApiError(404, "Plan not found in system");
+  }
+
+  return res
+    .status(200)
+    .json(new ApiResponse(200, updated, "Plan deactivated successfully"));
+});
 // ============================================
 // SUBSCRIPTION MANAGEMENT
 // ============================================
@@ -104,6 +184,9 @@ export const createSubscription = asyncHandler(async (req, res) => {
   const { plan_id, total_count, notes } = req.body;
   const userId = req.user._id;
 
+  // ---------------------------------------------
+  // Basic validation
+  // ---------------------------------------------
   if (!plan_id) {
     throw new ApiError(400, "plan_id is required");
   }
@@ -113,8 +196,24 @@ export const createSubscription = asyncHandler(async (req, res) => {
     throw new ApiError(400, "User email is required for subscription");
   }
 
+  // ✅ Check if plan is active in our system (Plan collection)
+  const activePlan = await Plan.findOne({
+    razorpayPlanId: plan_id,
+    isActive: true,
+  });
+
+  if (!activePlan) {
+    throw new ApiError(
+      400,
+      "Selected plan is not available. Please choose another plan."
+    );
+  }
+
   try {
-    // Check if user already has an active subscription for this plan
+    // ---------------------------------------------
+    // 1) Check if user already has a subscription for this plan
+    //    (created / authenticated / active / pending)
+    // ---------------------------------------------
     const existingSubscription = await Subscription.findOne({
       userId,
       planId: plan_id,
@@ -128,8 +227,11 @@ export const createSubscription = asyncHandler(async (req, res) => {
       );
     }
 
-    // Find or create customer
+    // ---------------------------------------------
+    // 2) Find or create Razorpay customer
+    // ---------------------------------------------
     let customer;
+
     const existingCustomer = await Subscription.findOne({
       userId,
       customerId: { $exists: true, $ne: null },
@@ -154,7 +256,9 @@ export const createSubscription = asyncHandler(async (req, res) => {
       });
     }
 
-    // Create subscription on Razorpay
+    // ---------------------------------------------
+    // 3) Create subscription on Razorpay
+    // ---------------------------------------------
     const subscription = await razorpay.subscriptions.create({
       plan_id,
       customer_id: customer.id,
@@ -164,7 +268,9 @@ export const createSubscription = asyncHandler(async (req, res) => {
       notes: notes || {},
     });
 
-    // Save to database
+    // ---------------------------------------------
+    // 4) Save subscription to MongoDB
+    // ---------------------------------------------
     const newSubscription = await Subscription.create({
       userId,
       subscriptionId: subscription.id,
@@ -184,6 +290,9 @@ export const createSubscription = asyncHandler(async (req, res) => {
       notes: subscription.notes,
     });
 
+    // ---------------------------------------------
+    // 5) Send response
+    // ---------------------------------------------
     return res.status(201).json(
       new ApiResponse(
         201,
@@ -204,7 +313,6 @@ export const createSubscription = asyncHandler(async (req, res) => {
     throw new ApiError(500, `Failed to create subscription: ${err.message}`);
   }
 });
-
 /**
  * Verify subscription payment
  * POST /api/subscriptions/verify
