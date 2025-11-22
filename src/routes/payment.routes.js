@@ -12,6 +12,7 @@ import {
   resumeSubscription,
   subscriptionWebhook,
 } from "../controllers/payment.controller.js"
+import { verifyJWT } from "../middleware/auth.Middleware.js";
 
 const router = express.Router();
 
@@ -21,7 +22,7 @@ router.get("/plans", getAllPlans);
 router.get("/plans/:planId", getPlanById);
 
 // Subscription routes
-router.post("/create", createSubscription);
+router.post("/create",verifyJWT, createSubscription);
 router.post("/verify", verifySubscriptionPayment);
 router.get("/user/all", getUserSubscriptions);
 router.get("/:subscriptionId",  getSubscription);
