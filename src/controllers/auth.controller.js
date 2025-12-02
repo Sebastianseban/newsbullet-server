@@ -108,6 +108,7 @@ export const registerUser = asyncHandler(async (req, res) => {
 
 export const loginUser = asyncHandler(async (req, res) => {
   let { email, password } = req.body;
+  console.log(req.body)
 
   const errors = [];
 
