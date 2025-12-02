@@ -58,6 +58,7 @@ app.use(helmet());
 app.use(
   cors({
     origin: "http://localhost:3000",
+    // origin:"https://news-bullet-kerala.vercel.app",
     credentials: true,
   })
 );
