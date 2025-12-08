@@ -1,0 +1,419 @@
+{
+  "collection": {
+    "info": {
+      "name": "newsBullet-server",
+      "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+    },
+    "variable": [
+      {
+        "key": "base_url",
+        "value": "http://localhost:3000"
+      }
+    ],
+    "item": [
+      {
+        "name": "Public",
+        "item": [
+          {
+            "name": "/register",
+            "request": {
+              "method": "POST",
+              "header": [],
+              "url": {
+                "raw": "{{base_url}}//register",
+                "host": [
+                  "{{base_url}}"
+                ],
+                "path": [
+                  "register"
+                ]
+              }
+            },
+            "response": []
+          },
+          {
+            "name": "/login",
+            "request": {
+              "method": "POST",
+              "header": [],
+              "url": {
+                "raw": "{{base_url}}//login",
+                "host": [
+                  "{{base_url}}"
+                ],
+                "path": [
+                  "login"
+                ]
+              }
+            },
+            "response": []
+          },
+          {
+            "name": "/refresh-token",
+            "request": {
+              "method": "POST",
+              "header": [],
+              "url": {
+                "raw": "{{base_url}}//refresh-token",
+                "host": [
+                  "{{base_url}}"
+                ],
+                "path": [
+                  "refresh-token"
+                ]
+              }
+            },
+            "response": []
+          }
+        ]
+      },
+      {
+        "name": "Protected",
+        "item": [
+          {
+            "name": "/me",
+            "request": {
+              "method": "GET",
+              "header": [],
+              "url": {
+                "raw": "{{base_url}}//me",
+                "host": [
+                  "{{base_url}}"
+                ],
+                "path": [
+                  "me"
+                ]
+              }
+            },
+            "response": []
+          },
+          {
+            "name": "/logout",
+            "request": {
+              "method": "POST",
+              "header": [],
+              "url": {
+                "raw": "{{base_url}}//logout",
+                "host": [
+                  "{{base_url}}"
+                ],
+                "path": [
+                  "logout"
+                ]
+              }
+            },
+            "response": []
+          }
+        ]
+      },
+      {
+        "name": "CRUD",
+        "item": [
+          {
+            "name": "/:slug",
+            "request": {
+              "method": "GET",
+              "header": [],
+              "url": {
+                "raw": "{{base_url}}//:slug",
+                "host": [
+                  "{{base_url}}"
+                ],
+                "path": [
+                  ":slug"
+                ]
+              }
+            },
+            "response": []
+          },
+          {
+            "name": "/:slug",
+            "request": {
+              "method": "PUT",
+              "header": [],
+              "url": {
+                "raw": "{{base_url}}//:slug",
+                "host": [
+                  "{{base_url}}"
+                ],
+                "path": [
+                  ":slug"
+                ]
+              }
+            },
+            "response": []
+          },
+          {
+            "name": "/:slug",
+            "request": {
+              "method": "DELETE",
+              "header": [],
+              "url": {
+                "raw": "{{base_url}}//:slug",
+                "host": [
+                  "{{base_url}}"
+                ],
+                "path": [
+                  ":slug"
+                ]
+              }
+            },
+            "response": []
+          }
+        ]
+      },
+      {
+        "name": "(optional: protect with admin middleware later)",
+        "item": [
+          {
+            "name": "/plans/create",
+            "request": {
+              "method": "POST",
+              "header": [],
+              "url": {
+                "raw": "{{base_url}}//plans/create",
+                "host": [
+                  "{{base_url}}"
+                ],
+                "path": [
+                  "plans",
+                  "create"
+                ]
+              }
+            },
+            "response": []
+          },
+          {
+            "name": "/plans",
+            "request": {
+              "method": "GET",
+              "header": [],
+              "url": {
+                "raw": "{{base_url}}//plans",
+                "host": [
+                  "{{base_url}}"
+                ],
+                "path": [
+                  "plans"
+                ]
+              }
+            },
+            "response": []
+          },
+          {
+            "name": "/plans/:planId",
+            "request": {
+              "method": "GET",
+              "header": [],
+              "url": {
+                "raw": "{{base_url}}//plans/:planId",
+                "host": [
+                  "{{base_url}}"
+                ],
+                "path": [
+                  "plans",
+                  ":planId"
+                ]
+              }
+            },
+            "response": []
+          },
+          {
+            "name": "/plans/:planId",
+            "request": {
+              "method": "DELETE",
+              "header": [],
+              "url": {
+                "raw": "{{base_url}}//plans/:planId",
+                "host": [
+                  "{{base_url}}"
+                ],
+                "path": [
+                  "plans",
+                  ":planId"
+                ]
+              }
+            },
+            "response": []
+          }
+        ]
+      },
+      {
+        "name": "=====================",
+        "item": [
+          {
+            "name": "/create",
+            "request": {
+              "method": "POST",
+              "header": [],
+              "url": {
+                "raw": "{{base_url}}//create",
+                "host": [
+                  "{{base_url}}"
+                ],
+                "path": [
+                  "create"
+                ]
+              }
+            },
+            "response": []
+          },
+          {
+            "name": "/verify",
+            "request": {
+              "method": "POST",
+              "header": [],
+              "url": {
+                "raw": "{{base_url}}//verify",
+                "host": [
+                  "{{base_url}}"
+                ],
+                "path": [
+                  "verify"
+                ]
+              }
+            },
+            "response": []
+          },
+          {
+            "name": "/user/all",
+            "request": {
+              "method": "GET",
+              "header": [],
+              "url": {
+                "raw": "{{base_url}}//user/all",
+                "host": [
+                  "{{base_url}}"
+                ],
+                "path": [
+                  "user",
+                  "all"
+                ]
+              }
+            },
+            "response": []
+          },
+          {
+            "name": "/:subscriptionId",
+            "request": {
+              "method": "GET",
+              "header": [],
+              "url": {
+                "raw": "{{base_url}}//:subscriptionId",
+                "host": [
+                  "{{base_url}}"
+                ],
+                "path": [
+                  ":subscriptionId"
+                ]
+              }
+            },
+            "response": []
+          },
+          {
+            "name": "/:subscriptionId/cancel",
+            "request": {
+              "method": "POST",
+              "header": [],
+              "url": {
+                "raw": "{{base_url}}//:subscriptionId/cancel",
+                "host": [
+                  "{{base_url}}"
+                ],
+                "path": [
+                  ":subscriptionId",
+                  "cancel"
+                ]
+              }
+            },
+            "response": []
+          },
+          {
+            "name": "/:subscriptionId/pause",
+            "request": {
+              "method": "POST",
+              "header": [],
+              "url": {
+                "raw": "{{base_url}}//:subscriptionId/pause",
+                "host": [
+                  "{{base_url}}"
+                ],
+                "path": [
+                  ":subscriptionId",
+                  "pause"
+                ]
+              }
+            },
+            "response": []
+          },
+          {
+            "name": "/:subscriptionId/resume",
+            "request": {
+              "method": "POST",
+              "header": [],
+              "url": {
+                "raw": "{{base_url}}//:subscriptionId/resume",
+                "host": [
+                  "{{base_url}}"
+                ],
+                "path": [
+                  ":subscriptionId",
+                  "resume"
+                ]
+              }
+            },
+            "response": []
+          },
+          {
+            "name": "/webhook/razorpay/subscription",
+            "request": {
+              "method": "POST",
+              "header": [],
+              "url": {
+                "raw": "{{base_url}}//webhook/razorpay/subscription",
+                "host": [
+                  "{{base_url}}"
+                ],
+                "path": [
+                  "webhook",
+                  "razorpay",
+                  "subscription"
+                ]
+              }
+            },
+            "response": []
+          }
+        ]
+      }
+    ],
+    "auth": {
+      "type": "bearer",
+      "bearer": [
+        {
+          "key": "token",
+          "value": "{{auth_token}}",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "env": {
+    "name": "NewsBullet Server",
+    "values": [
+      {
+        "key": "base_url",
+        "value": "http://localhost:4000",
+        "enabled": true
+      },
+      {
+        "key": "token",
+        "value": "{{token}}",
+        "enabled": true
+      }
+    ],
+    "_postman_variable_scope": "environment",
+    "_postman_exported_at": "2025-12-07T16:28:31.162Z",
+    "_postman_exported_using": "Collection Generator"
+  },
+  "envPath": "/Users/apple/Downloads/newsBullet-server/postman_environment.json"
+}
