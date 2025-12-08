@@ -15,6 +15,9 @@ import authRoutes from "./routes/auth.routes.js";
 import { subscriptionWebhook } from "./controllers/payment.controller.js"
 import { syncYouTubeVideos } from "./services/youtubeSync.js";
 
+import newsRoutes from "./routes/news.routes.js";
+
+
 const app = express();
 
 /**
@@ -84,7 +87,7 @@ cron.schedule("0 3 * * *", () => {
 // Payments (existing)
 app.use("/api/v1/payments", paymentRoutes );
 app.use("/api/v1/auth", authRoutes);
-
+app.use("/api/v1/news", newsRoutes);
 // Subscriptions (new)
 
 
