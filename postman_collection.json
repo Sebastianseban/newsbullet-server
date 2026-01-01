@@ -259,23 +259,6 @@
             "response": []
           },
           {
-            "name": "/verify",
-            "request": {
-              "method": "POST",
-              "header": [],
-              "url": {
-                "raw": "{{base_url}}//verify",
-                "host": [
-                  "{{base_url}}"
-                ],
-                "path": [
-                  "verify"
-                ]
-              }
-            },
-            "response": []
-          },
-          {
             "name": "/user/all",
             "request": {
               "method": "GET",
@@ -363,25 +346,6 @@
               }
             },
             "response": []
-          },
-          {
-            "name": "/webhook/razorpay/subscription",
-            "request": {
-              "method": "POST",
-              "header": [],
-              "url": {
-                "raw": "{{base_url}}//webhook/razorpay/subscription",
-                "host": [
-                  "{{base_url}}"
-                ],
-                "path": [
-                  "webhook",
-                  "razorpay",
-                  "subscription"
-                ]
-              }
-            },
-            "response": []
           }
         ]
       }
@@ -412,7 +376,7 @@
       }
     ],
     "_postman_variable_scope": "environment",
-    "_postman_exported_at": "2025-12-07T16:28:31.162Z",
+    "_postman_exported_at": "2025-12-31T05:22:15.424Z",
     "_postman_exported_using": "Collection Generator"
   },
   "envPath": "/Users/apple/Downloads/newsBullet-server/postman_environment.json"
