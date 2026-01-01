@@ -184,223 +184,142 @@ export const createSubscription = asyncHandler(async (req, res) => {
   const { plan_id, total_count, notes } = req.body;
   const userId = req.user._id;
 
-  // ---------------------------------------------
-  // Basic validation
-  // ---------------------------------------------
   if (!plan_id) {
     throw new ApiError(400, "plan_id is required");
   }
 
-  // Validate user details
   if (!req.user.email) {
     throw new ApiError(400, "User email is required for subscription");
   }
 
-  // ✅ Check if plan is active in our system (Plan collection)
+  // ✅ Validate plan
   const activePlan = await Plan.findOne({
     razorpayPlanId: plan_id,
     isActive: true,
   });
 
   if (!activePlan) {
-    throw new ApiError(
-      400,
-      "Selected plan is not available. Please choose another plan."
-    );
+    throw new ApiError(400, "Selected plan is not available");
   }
 
-  try {
-    // ---------------------------------------------
-    // 1) Check if user already has a subscription for this plan
-    //    (created / authenticated / active / pending)
-    // ---------------------------------------------
-    const existingSubscription = await Subscription.findOne({
-      userId,
-      planId: plan_id,
-      status: { $in: ["created", "authenticated", "active", "pending"] },
-    });
+  // =====================================================
+  // 🔥 FIXED LOGIC: handle existing subscriptions properly
+  // =====================================================
 
-    if (existingSubscription) {
-      throw new ApiError(
-        400,
-        "You already have an active subscription for this plan"
+  const existingSubscription = await Subscription.findOne({
+    userId,
+    planId: plan_id,
+    status: { $in: ["created", "authenticated", "active", "pending"] },
+  });
+
+  if (existingSubscription) {
+    // 🔁 Resume payment if not active
+    if (["created", "authenticated"].includes(existingSubscription.status)) {
+      return res.status(200).json(
+        new ApiResponse(
+          200,
+          {
+            subscription: {
+              id: existingSubscription.subscriptionId,
+              short_url: existingSubscription.shortUrl,
+              status: existingSubscription.status,
+            },
+          },
+          "Pending subscription found. Please complete the payment."
+        )
       );
     }
 
-    // ---------------------------------------------
-    // 2) Find or create Razorpay customer
-    // ---------------------------------------------
-    let customer;
+    // ❌ Block only real active subscriptions
+    throw new ApiError(
+      400,
+      "You already have an active subscription for this plan"
+    );
+  }
 
-    const existingCustomer = await Subscription.findOne({
-      userId,
-      customerId: { $exists: true, $ne: null },
-    }).select("customerId");
+  // =====================================
+  // 2️⃣ Find or create Razorpay customer
+  // =====================================
 
-    if (existingCustomer?.customerId) {
-      try {
-        customer = await razorpay.customers.fetch(existingCustomer.customerId);
-      } catch (err) {
-        // Customer not found in Razorpay, create new one
-        console.log("Customer not found in Razorpay, creating new one");
-        customer = null;
-      }
+  let customer;
+
+  const oldCustomer = await Subscription.findOne({
+    userId,
+    customerId: { $exists: true, $ne: null },
+  }).select("customerId");
+
+  if (oldCustomer?.customerId) {
+    try {
+      customer = await razorpay.customers.fetch(oldCustomer.customerId);
+    } catch {
+      customer = null;
     }
+  }
 
-    if (!customer) {
-      customer = await razorpay.customers.create({
-        name: req.user.name || "User",
-        email: req.user.email,
-        contact: req.user.phone || "",
-        fail_existing: 0, // Don't fail if customer with email exists
-      });
-    }
-
-    // ---------------------------------------------
-    // 3) Create subscription on Razorpay
-    // ---------------------------------------------
-    const subscription = await razorpay.subscriptions.create({
-      plan_id,
-      customer_id: customer.id,
-      total_count: total_count || 12,
-      quantity: 1,
-      customer_notify: 1,
-      notes: notes || {},
+  if (!customer) {
+    customer = await razorpay.customers.create({
+      name: req.user.name || "User",
+      email: req.user.email,
+      contact: req.user.phone || "",
+      fail_existing: 0,
     });
+  }
 
-    // ---------------------------------------------
-    // 4) Save subscription to MongoDB
-    // ---------------------------------------------
-    const newSubscription = await Subscription.create({
-      userId,
-      subscriptionId: subscription.id,
-      planId: plan_id,
-      customerId: customer.id,
-      status: subscription.status,
-      totalCount: subscription.total_count,
-      paidCount: subscription.paid_count || 0,
-      // IMPORTANT FIX: respect 0 instead of falling back
-      remainingCount:
-        subscription.remaining_count ?? subscription.total_count,
-      startAt: toDate(subscription.start_at),
-      endAt: toDate(subscription.end_at),
-      chargeAt: toDate(subscription.charge_at),
-      currentStart: toDate(subscription.current_start),
-      currentEnd: toDate(subscription.current_end),
-      notes: subscription.notes,
-    });
+  // =====================================
+  // 3️⃣ Create Razorpay subscription
+  // =====================================
 
-    // ---------------------------------------------
-    // 5) Send response
-    // ---------------------------------------------
-    return res.status(201).json(
-      new ApiResponse(
-        201,
-        {
-          subscription: {
-            id: subscription.id,
-            short_url: subscription.short_url,
-            status: subscription.status,
-          },
-          dbRecord: newSubscription,
+  const subscription = await razorpay.subscriptions.create({
+    plan_id,
+    customer_id: customer.id,
+    total_count: total_count || 12,
+    quantity: 1,
+    customer_notify: 1,
+    notes: notes || {},
+  });
+
+  // =====================================
+  // 4️⃣ Save subscription in MongoDB
+  // =====================================
+
+  const dbSubscription = await Subscription.create({
+    userId,
+    subscriptionId: subscription.id,
+    planId: plan_id,
+    customerId: customer.id,
+    status: subscription.status,
+    shortUrl: subscription.short_url, // ⭐ IMPORTANT FIX
+    totalCount: subscription.total_count,
+    paidCount: subscription.paid_count || 0,
+    remainingCount:
+      subscription.remaining_count ?? subscription.total_count,
+    startAt: toDate(subscription.start_at),
+    endAt: toDate(subscription.end_at),
+    chargeAt: toDate(subscription.charge_at),
+    currentStart: toDate(subscription.current_start),
+    currentEnd: toDate(subscription.current_end),
+    notes: subscription.notes,
+  });
+
+  // =====================================
+  // 5️⃣ Response
+  // =====================================
+
+  return res.status(201).json(
+    new ApiResponse(
+      201,
+      {
+        subscription: {
+          id: subscription.id,
+          short_url: subscription.short_url,
+          status: subscription.status,
         },
-        "Subscription created successfully. Please complete the payment."
-      )
-    );
-  } catch (err) {
-    console.error("Subscription creation failed:", err);
-    if (err instanceof ApiError) throw err;
-    throw new ApiError(500, `Failed to create subscription: ${err.message}`);
-  }
-});
-/**
- * Verify subscription payment
- * POST /api/subscriptions/verify
- */
-export const verifySubscriptionPayment = asyncHandler(async (req, res) => {
-  const {
-    razorpay_payment_id,
-    razorpay_subscription_id,
-    razorpay_signature,
-  } = req.body;
-
-  if (!razorpay_payment_id || !razorpay_subscription_id || !razorpay_signature) {
-    throw new ApiError(400, "Missing required payment verification fields");
-  }
-
-  // Verify signature
-  const generatedSignature = crypto
-    .createHmac("sha256", process.env.RAZORPAY_SECRET)
-    .update(`${razorpay_payment_id}|${razorpay_subscription_id}`)
-    .digest("hex");
-
-  if (generatedSignature !== razorpay_signature) {
-    // Mark as failed
-    await Subscription.findOneAndUpdate(
-      { subscriptionId: razorpay_subscription_id },
-      {
-        status: "failed",
-        failureReason: "Invalid signature",
-      }
-    );
-    throw new ApiError(400, "Invalid payment signature");
-  }
-
-  try {
-    // Fetch subscription details from Razorpay
-    const subscription = await razorpay.subscriptions.fetch(
-      razorpay_subscription_id
-    );
-
-    // Fetch payment details
-    const payment = await razorpay.payments.fetch(razorpay_payment_id);
-
-    // Update subscription in database
-    const updated = await Subscription.findOneAndUpdate(
-      { subscriptionId: razorpay_subscription_id },
-      {
-        lastPaymentId: razorpay_payment_id,
-        status: subscription.status,
-        paidCount: subscription.paid_count,
-        remainingCount:
-          subscription.remaining_count ?? subscription.total_count,
-        // Prefer gateway time if available
-        lastChargedAt: payment.created_at
-          ? toDate(payment.created_at)
-          : new Date(),
-        currentStart: toDate(subscription.current_start),
-        currentEnd: toDate(subscription.current_end),
-        chargeAt: toDate(subscription.charge_at),
-        activatedAt: subscription.status === "active" ? new Date() : undefined,
+        dbRecord: dbSubscription,
       },
-      { new: true }
-    );
-
-    if (!updated) {
-      throw new ApiError(404, "Subscription not found in database");
-    }
-
-    return res.status(200).json(
-      new ApiResponse(
-        200,
-        {
-          subscription: updated,
-          payment: {
-            id: payment.id,
-            amount: payment.amount,
-            status: payment.status,
-          },
-        },
-        "Payment verified and subscription activated successfully"
-      )
-    );
-  } catch (err) {
-    console.error("Payment verification failed:", err);
-    if (err instanceof ApiError) throw err;
-    throw new ApiError(500, `Payment verification failed: ${err.message}`);
-  }
+      "Subscription created successfully. Please complete the payment."
+    )
+  );
 });
-
 /**
  * Get user's subscriptions
  * GET /api/subscriptions/user/all
