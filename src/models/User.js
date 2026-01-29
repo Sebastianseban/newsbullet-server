@@ -20,6 +20,13 @@ const userSchema = new mongoose.Schema(
       index: true,
       match: [/^\S+@\S+\.\S+$/, "Please provide a valid email address"],
     },
+    phone: {
+      type: String,
+      trim: true,
+      index: true,
+      match: [/^[6-9]\d{9}$/, "Please provide a valid Indian mobile number"],
+    },
+
     password: {
       type: String,
       required: [true, "Password is required"],
@@ -49,7 +56,7 @@ const userSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-  }
+  },
 );
 
 // ---------------------------------------------
@@ -84,7 +91,7 @@ userSchema.methods.generateAccessToken = function () {
       role: this.role,
     },
     process.env.ACCESS_TOKEN_SECRET,
-    { expiresIn: process.env.ACCESS_TOKEN_EXPIRY || "1h" }
+    { expiresIn: process.env.ACCESS_TOKEN_EXPIRY || "1h" },
   );
 };
 
