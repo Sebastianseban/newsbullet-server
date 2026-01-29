@@ -70,7 +70,7 @@ app.use(
 // 🔥 1. RUN SYNC ONCE (Optional First Fill)
 // ---------------------------------------------
 // Uncomment this only once to fill MongoDB the first time
-// syncYouTubeVideos();
+syncYouTubeVideos();
 
 // ---------------------------------------------
 // 🔥 2. CRON JOB — SYNC EVERY DAY AT 3 AM
@@ -94,7 +94,7 @@ app.use("/api/v1/news", newsRoutes);
 // YouTube routes (existing)
 app.use("/api/youtube", youtubeRoutes);
 
-app.get("/", (req, res) => {
+app.get("/health", (req, res) => {
   res.send("News Bullet Kerala Backend Running 🚀");
 });
 
