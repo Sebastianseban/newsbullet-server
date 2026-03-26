@@ -3,102 +3,90 @@ import express from "express";
 import cors from "cors";
 import compression from "compression";
 import helmet from "helmet";
-import cron from "node-cron";
 
 import { errorHandler, notFound } from "./middleware/errorHandler.middleware.js";
 
 import paymentRoutes from "./routes/payment.routes.js";
 import youtubeRoutes from "./routes/youtube.routes.js";
 import authRoutes from "./routes/auth.routes.js";
-
-
-import { subscriptionWebhook } from "./controllers/payment.controller.js"
-import { syncYouTubeVideos } from "./services/youtubeSync.js";
-
 import newsRoutes from "./routes/news.routes.js";
 
+import { subscriptionWebhook } from "./controllers/payment.controller.js";
 
 const app = express();
 
 /**
- * 🧾 RAW BODY FOR RAZORPAY PAYMENT WEBHOOK (EXISTING)
- * Make sure this stays BEFORE express.json()
- */
-app.use(
-  "/api/payments/webhook",
-  express.raw({ type: "application/json" })
-);
-
-/**
- * 🧾 RAW BODY FOR RAZORPAY SUBSCRIPTION WEBHOOK
- * This route needs raw body for signature verification.
- * Must also be BEFORE express.json()
+ * 🔒 RAW BODY FOR WEBHOOKS (must be before express.json)
  */
 app.post(
   "/api/webhooks/razorpay/subscription",
   express.raw({ type: "application/json" }),
   (req, res, next) => {
-    // Save raw body for HMAC verification
-    req.rawBody = req.body.toString();
-
-    // Parse JSON body manually so controller can use req.body as object
     try {
+      req.rawBody = req.body.toString();
       req.body = JSON.parse(req.rawBody || "{}");
-    } catch (e) {
+    } catch {
       req.body = {};
     }
 
-    subscriptionWebhook(req, res, next);
+    return subscriptionWebhook(req, res, next); // ✅ important
   }
 );
 
-// Normal JSON/body parsers for all other routes
+// Normal middleware
 app.use(express.json({ limit: "20kb" }));
 app.use(cookieParser());
 app.use(compression());
 app.use(helmet());
 
+// ✅ FIXED: dynamic CORS
+const allowedOrigins = [
+  "http://localhost:3000",
+  "https://newsbulletkerala.com",
+];
+
 app.use(
   cors({
-    origin: "http://localhost:3000",
-    // origin:"https://news-bullet-kerala.vercel.app",
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      callback(new Error("Not allowed by CORS"));
+    },
     credentials: true,
   })
 );
 
 // ---------------------------------------------
-// 🔥 1. RUN SYNC ONCE (Optional First Fill)
-// ---------------------------------------------
-// Uncomment this only once to fill MongoDB the first time
-syncYouTubeVideos();
-
-// ---------------------------------------------
-// 🔥 2. CRON JOB — SYNC EVERY DAY AT 3 AM
-// ---------------------------------------------
-cron.schedule("0 3 * * *", () => {
-  console.log("⏰ CRON: Running Daily YouTube Sync at 3 AM...");
-  syncYouTubeVideos();
-});
-
-// ---------------------------------------------
 // ROUTES
 // ---------------------------------------------
-
-// Payments (existing)
-app.use("/api/v1/payments", paymentRoutes );
+app.use("/api/v1/payments", paymentRoutes);
 app.use("/api/v1/auth", authRoutes);
 app.use("/api/v1/news", newsRoutes);
-// Subscriptions (new)
-
-
-// YouTube routes (existing)
 app.use("/api/youtube", youtubeRoutes);
 
-app.get("/health", (req, res) => {
-  res.send("News Bullet Kerala Backend Running 🚀");
+// ---------------------------------------------
+// HEALTH CHECKS (REAL)
+// ---------------------------------------------
+import mongoose from "mongoose";
+
+app.get("/livez", (req, res) => {
+  res.status(200).json({ status: "alive" });
 });
 
-// Error handlers
+app.get("/readyz", (req, res) => {
+  const dbReady = mongoose.connection.readyState === 1;
+
+  if (!dbReady) {
+    return res.status(500).json({ status: "not ready", db: "down" });
+  }
+
+  res.status(200).json({ status: "ready" });
+});
+
+// ---------------------------------------------
+// ERROR HANDLING
+// ---------------------------------------------
 app.use(notFound);
 app.use(errorHandler);
 

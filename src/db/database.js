@@ -2,14 +2,35 @@ import mongoose from "mongoose";
 import { MONGODB_URI } from "../config/config.js";
 
 const connectDB = async () => {
+  if (!MONGODB_URI) {
+    throw new Error("Missing MONGODB_URI in environment variables");
+  }
+
   try {
-    const connectionInstance =await mongoose.connect(MONGODB_URI);
+    mongoose.set("strictQuery", true);
+
+    const connectionInstance = await mongoose.connect(MONGODB_URI, {
+      serverSelectionTimeoutMS: 10000,
+      socketTimeoutMS: 20000,
+      maxPoolSize: 10,
+    });
+
     console.log(
-      `\n MongoDB connected !! DB HOST:${connectionInstance.connection.host}`
+      `✅ MongoDB connected successfully | HOST: ${connectionInstance.connection.host}`
     );
+
+    mongoose.connection.on("error", (err) => {
+      console.error("❌ MongoDB runtime error:", err.message);
+    });
+
+    mongoose.connection.on("disconnected", () => {
+      console.warn("⚠️ MongoDB disconnected");
+    });
+
+    return connectionInstance;
   } catch (error) {
-    console.log("MongoDB connection error", error);
-    process.exit(1);
+    console.error("❌ MongoDB connection error:", error.message);
+    throw error;
   }
 };
 
