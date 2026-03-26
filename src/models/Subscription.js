@@ -28,6 +28,10 @@ const subscriptionSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    shortUrl: {
+      type: String,
+      trim: true,
+    },
     status: {
       type: String,
       enum: [
