@@ -1,7 +1,3 @@
-// ============================================
-// subscriptionController.js
-// ============================================
-
 import Subscription from "../models/Subscription.js";
 import { razorpay } from "../utils/razorpayInstance.js";
 import { ApiError } from "../utils/ApiError.js";
@@ -9,6 +5,7 @@ import { ApiResponse } from "../utils/ApiResponse.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import Plan from "../models/Plan.js";
 import crypto from "crypto";
+import { withTimeout } from "../utils/withTimeout.js";
 
 // Helper to convert Razorpay UNIX timestamps (seconds) to JS Date
 const toDate = (ts) => (ts ? new Date(ts * 1000) : null);
@@ -24,7 +21,6 @@ const toDate = (ts) => (ts ? new Date(ts * 1000) : null);
 export const createPlan = asyncHandler(async (req, res) => {
   const { name, amount, interval, period, description } = req.body;
 
-  // Validation
   if (!name || !amount || !period || !interval) {
     throw new ApiError(400, "Name, amount, period, and interval are required");
   }
@@ -39,29 +35,33 @@ export const createPlan = asyncHandler(async (req, res) => {
   }
 
   try {
-    // 1) Create plan in Razorpay
-    const plan = await razorpay.plans.create({
-      period,
-      interval: Number(interval),
-      item: {
-        name,
-        amount: Number(amount) * 100, // Convert to paise
-        currency: "INR",
-        description: description || name,
-      },
-    });
+    const plan = await withTimeout(
+      razorpay.plans.create({
+        period,
+        interval: Number(interval),
+        item: {
+          name,
+          amount: Number(amount) * 100,
+          currency: "INR",
+          description: description || name,
+        },
+      }),
+      10000
+    );
 
-    // 2) Save plan metadata in Mongo (our own system)
-    const dbPlan = await Plan.create({
-      razorpayPlanId: plan.id,
-      name: plan.item.name,
-      amount: plan.item.amount / 100, // store as rupees
-      currency: plan.item.currency,
-      period: plan.period,
-      interval: plan.interval,
-      description: plan.item.description,
-      isActive: true,
-    });
+    const dbPlan = await withTimeout(
+      Plan.create({
+        razorpayPlanId: plan.id,
+        name: plan.item.name,
+        amount: plan.item.amount / 100,
+        currency: plan.item.currency,
+        period: plan.period,
+        interval: plan.interval,
+        description: plan.item.description,
+        isActive: true,
+      }),
+      5000
+    );
 
     return res.status(201).json(
       new ApiResponse(
@@ -79,15 +79,16 @@ export const createPlan = asyncHandler(async (req, res) => {
   }
 });
 
-
 /**
  * Get all plans
  * GET /api/subscriptions/plans
  */
 export const getAllPlans = asyncHandler(async (req, res) => {
   try {
-    // 1) Get active plans from our DB
-    const activePlans = await Plan.find({ isActive: true }).lean();
+    const activePlans = await withTimeout(
+      Plan.find({ isActive: true }).lean(),
+      5000
+    );
 
     if (!activePlans.length) {
       return res
@@ -97,15 +98,15 @@ export const getAllPlans = asyncHandler(async (req, res) => {
 
     const activeIds = new Set(activePlans.map((p) => p.razorpayPlanId));
 
-    // 2) Fetch all plans from Razorpay
-    const razorpayPlans = await razorpay.plans.all();
+    const razorpayPlans = await withTimeout(
+      razorpay.plans.all({ count: 50 }),
+      10000
+    );
 
-    // 3) Keep only those which are active in our DB
     const filteredRazorpayPlans = razorpayPlans.items.filter((p) =>
       activeIds.has(p.id)
     );
 
-    // 4) Merge DB meta + Razorpay data
     const merged = filteredRazorpayPlans.map((rp) => {
       const db = activePlans.find((p) => p.razorpayPlanId === rp.id);
       return {
@@ -131,8 +132,11 @@ export const getPlanById = asyncHandler(async (req, res) => {
   const { planId } = req.params;
 
   try {
-    const plan = await razorpay.plans.fetch(planId);
-    const dbPlan = await Plan.findOne({ razorpayPlanId: planId }).lean();
+    const plan = await withTimeout(razorpay.plans.fetch(planId), 10000);
+    const dbPlan = await withTimeout(
+      Plan.findOne({ razorpayPlanId: planId }).lean(),
+      5000
+    );
 
     return res.status(200).json(
       new ApiResponse(
@@ -149,19 +153,21 @@ export const getPlanById = asyncHandler(async (req, res) => {
     throw new ApiError(404, "Plan not found");
   }
 });
+
 /**
  * Soft delete / deactivate a plan
  * DELETE /api/subscriptions/plans/:planId
- *
- * planId = Razorpay plan id
  */
 export const deletePlan = asyncHandler(async (req, res) => {
   const { planId } = req.params;
 
-  const updated = await Plan.findOneAndUpdate(
-    { razorpayPlanId: planId },
-    { isActive: false },
-    { new: true }
+  const updated = await withTimeout(
+    Plan.findOneAndUpdate(
+      { razorpayPlanId: planId },
+      { isActive: false },
+      { new: true }
+    ),
+    5000
   );
 
   if (!updated) {
@@ -172,6 +178,7 @@ export const deletePlan = asyncHandler(async (req, res) => {
     .status(200)
     .json(new ApiResponse(200, updated, "Plan deactivated successfully"));
 });
+
 // ============================================
 // SUBSCRIPTION MANAGEMENT
 // ============================================
@@ -192,28 +199,28 @@ export const createSubscription = asyncHandler(async (req, res) => {
     throw new ApiError(400, "User email is required for subscription");
   }
 
-  // ✅ Validate plan
-  const activePlan = await Plan.findOne({
-    razorpayPlanId: plan_id,
-    isActive: true,
-  });
+  const activePlan = await withTimeout(
+    Plan.findOne({
+      razorpayPlanId: plan_id,
+      isActive: true,
+    }),
+    5000
+  );
 
   if (!activePlan) {
     throw new ApiError(400, "Selected plan is not available");
   }
 
-  // =====================================================
-  // 🔥 FIXED LOGIC: handle existing subscriptions properly
-  // =====================================================
-
-  const existingSubscription = await Subscription.findOne({
-    userId,
-    planId: plan_id,
-    status: { $in: ["created", "authenticated", "active", "pending"] },
-  });
+  const existingSubscription = await withTimeout(
+    Subscription.findOne({
+      userId,
+      planId: plan_id,
+      status: { $in: ["created", "authenticated", "active", "pending"] },
+    }),
+    5000
+  );
 
   if (existingSubscription) {
-    // 🔁 Resume payment if not active
     if (["created", "authenticated"].includes(existingSubscription.status)) {
       return res.status(200).json(
         new ApiResponse(
@@ -230,80 +237,78 @@ export const createSubscription = asyncHandler(async (req, res) => {
       );
     }
 
-    // ❌ Block only real active subscriptions
     throw new ApiError(
       400,
       "You already have an active subscription for this plan"
     );
   }
 
-  // =====================================
-  // 2️⃣ Find or create Razorpay customer
-  // =====================================
-
   let customer;
 
-  const oldCustomer = await Subscription.findOne({
-    userId,
-    customerId: { $exists: true, $ne: null },
-  }).select("customerId");
+  const oldCustomer = await withTimeout(
+    Subscription.findOne({
+      userId,
+      customerId: { $exists: true, $ne: null },
+    }).select("customerId"),
+    5000
+  );
 
   if (oldCustomer?.customerId) {
     try {
-      customer = await razorpay.customers.fetch(oldCustomer.customerId);
+      customer = await withTimeout(
+        razorpay.customers.fetch(oldCustomer.customerId),
+        10000
+      );
     } catch {
       customer = null;
     }
   }
 
   if (!customer) {
-    customer = await razorpay.customers.create({
-      name: req.user.name || "User",
-      email: req.user.email,
-      contact: req.user.phone || "",
-      fail_existing: 0,
-    });
+    customer = await withTimeout(
+      razorpay.customers.create({
+        name: req.user.name || "User",
+        email: req.user.email,
+        contact: req.user.phone || "",
+        fail_existing: 0,
+      }),
+      10000
+    );
   }
 
-  // =====================================
-  // 3️⃣ Create Razorpay subscription
-  // =====================================
+  const subscription = await withTimeout(
+    razorpay.subscriptions.create({
+      plan_id,
+      customer_id: customer.id,
+      total_count: total_count || 12,
+      quantity: 1,
+      customer_notify: 1,
+      notes: notes || {},
+    }),
+    10000
+  );
 
-  const subscription = await razorpay.subscriptions.create({
-    plan_id,
-    customer_id: customer.id,
-    total_count: total_count || 12,
-    quantity: 1,
-    customer_notify: 1,
-    notes: notes || {},
-  });
-
-  // =====================================
-  // 4️⃣ Save subscription in MongoDB
-  // =====================================
-
-  const dbSubscription = await Subscription.create({
-    userId,
-    subscriptionId: subscription.id,
-    planId: plan_id,
-    customerId: customer.id,
-    status: subscription.status,
-    shortUrl: subscription.short_url, // ⭐ IMPORTANT FIX
-    totalCount: subscription.total_count,
-    paidCount: subscription.paid_count || 0,
-    remainingCount:
-      subscription.remaining_count ?? subscription.total_count,
-    startAt: toDate(subscription.start_at),
-    endAt: toDate(subscription.end_at),
-    chargeAt: toDate(subscription.charge_at),
-    currentStart: toDate(subscription.current_start),
-    currentEnd: toDate(subscription.current_end),
-    notes: subscription.notes,
-  });
-
-  // =====================================
-  // 5️⃣ Response
-  // =====================================
+  const dbSubscription = await withTimeout(
+    Subscription.create({
+      userId,
+      subscriptionId: subscription.id,
+      planId: plan_id,
+      customerId: customer.id,
+      status: subscription.status,
+      shortUrl: subscription.short_url,
+      totalCount: subscription.total_count,
+      paidCount: subscription.paid_count || 0,
+      remainingCount:
+        subscription.remaining_count ?? subscription.total_count,
+      startAt: toDate(subscription.start_at),
+      endAt: toDate(subscription.end_at),
+      chargeAt: toDate(subscription.charge_at),
+      currentStart: toDate(subscription.current_start),
+      currentEnd: toDate(subscription.current_end),
+      notes: subscription.notes,
+    }),
+    5000
+  );
 
   return res.status(201).json(
     new ApiResponse(
@@ -320,6 +325,7 @@ export const createSubscription = asyncHandler(async (req, res) => {
     )
   );
 });
+
 /**
  * Get user's subscriptions
  * GET /api/subscriptions/user/all
@@ -333,9 +339,10 @@ export const getUserSubscriptions = asyncHandler(async (req, res) => {
     filter.status = status;
   }
 
-  const subscriptions = await Subscription.find(filter)
-    .sort({ createdAt: -1 })
-    .lean();
+  const subscriptions = await withTimeout(
+    Subscription.find(filter).sort({ createdAt: -1 }).lean(),
+    5000
+  );
 
   return res.status(200).json(
     new ApiResponse(
@@ -354,19 +361,22 @@ export const getSubscription = asyncHandler(async (req, res) => {
   const { subscriptionId } = req.params;
   const userId = req.user._id;
 
-  const subscription = await Subscription.findOne({
-    subscriptionId,
-    userId, // Ensure user can only access their own subscriptions
-  });
+  const subscription = await withTimeout(
+    Subscription.findOne({
+      subscriptionId,
+      userId,
+    }),
+    5000
+  );
 
   if (!subscription) {
     throw new ApiError(404, "Subscription not found");
   }
 
-  // Optionally fetch latest from Razorpay
   try {
-    const razorpaySubscription = await razorpay.subscriptions.fetch(
-      subscriptionId
+    const razorpaySubscription = await withTimeout(
+      razorpay.subscriptions.fetch(subscriptionId),
+      10000
     );
 
     return res.status(200).json(
@@ -396,11 +406,13 @@ export const cancelSubscription = asyncHandler(async (req, res) => {
   const { cancel_at_cycle_end } = req.body;
   const userId = req.user._id;
 
-  // Verify ownership
-  const subscription = await Subscription.findOne({
-    subscriptionId,
-    userId,
-  });
+  const subscription = await withTimeout(
+    Subscription.findOne({
+      subscriptionId,
+      userId,
+    }),
+    5000
+  );
 
   if (!subscription) {
     throw new ApiError(404, "Subscription not found");
@@ -414,20 +426,24 @@ export const cancelSubscription = asyncHandler(async (req, res) => {
   }
 
   try {
-    // Cancel on Razorpay
-    const cancelled = await razorpay.subscriptions.cancel(subscriptionId, {
-      cancel_at_cycle_end: !!cancel_at_cycle_end,
-    });
+    const cancelled = await withTimeout(
+      razorpay.subscriptions.cancel(subscriptionId, {
+        cancel_at_cycle_end: !!cancel_at_cycle_end,
+      }),
+      10000
+    );
 
-    // Update in database
-    const updated = await Subscription.findOneAndUpdate(
-      { subscriptionId },
-      {
-        status: cancel_at_cycle_end ? "pending_cancellation" : "cancelled",
-        cancelledAt: new Date(),
-        endAt: cancelled.ended_at ? toDate(cancelled.ended_at) : null,
-      },
-      { new: true }
+    const updated = await withTimeout(
+      Subscription.findOneAndUpdate(
+        { subscriptionId },
+        {
+          status: cancel_at_cycle_end ? "pending_cancellation" : "cancelled",
+          cancelledAt: new Date(),
+          endAt: cancelled.ended_at ? toDate(cancelled.ended_at) : null,
+        },
+        { new: true }
+      ),
+      5000
     );
 
     return res.status(200).json(
@@ -454,10 +470,13 @@ export const pauseSubscription = asyncHandler(async (req, res) => {
   const { pause_at } = req.body;
   const userId = req.user._id;
 
-  const subscription = await Subscription.findOne({
-    subscriptionId,
-    userId,
-  });
+  const subscription = await withTimeout(
+    Subscription.findOne({
+      subscriptionId,
+      userId,
+    }),
+    5000
+  );
 
   if (!subscription) {
     throw new ApiError(404, "Subscription not found");
@@ -471,20 +490,26 @@ export const pauseSubscription = asyncHandler(async (req, res) => {
   }
 
   try {
-    const paused = await razorpay.subscriptions.pause(subscriptionId, {
-      pause_at: pause_at || "now",
-    });
+    const paused = await withTimeout(
+      razorpay.subscriptions.pause(subscriptionId, {
+        pause_at: pause_at || "now",
+      }),
+      10000
+    );
 
-    const updated = await Subscription.findOneAndUpdate(
-      { subscriptionId },
-      {
-        status: "paused",
-        pausedAt: new Date(),
-        currentStart: toDate(paused.current_start),
-        currentEnd: toDate(paused.current_end),
-        chargeAt: toDate(paused.charge_at),
-      },
-      { new: true }
+    const updated = await withTimeout(
+      Subscription.findOneAndUpdate(
+        { subscriptionId },
+        {
+          status: "paused",
+          pausedAt: new Date(),
+          currentStart: toDate(paused.current_start),
+          currentEnd: toDate(paused.current_end),
+          chargeAt: toDate(paused.charge_at),
+        },
+        { new: true }
+      ),
+      5000
     );
 
     return res
@@ -505,10 +530,13 @@ export const resumeSubscription = asyncHandler(async (req, res) => {
   const { resume_at } = req.body;
   const userId = req.user._id;
 
-  const subscription = await Subscription.findOne({
-    subscriptionId,
-    userId,
-  });
+  const subscription = await withTimeout(
+    Subscription.findOne({
+      subscriptionId,
+      userId,
+    }),
+    5000
+  );
 
   if (!subscription) {
     throw new ApiError(404, "Subscription not found");
@@ -522,20 +550,26 @@ export const resumeSubscription = asyncHandler(async (req, res) => {
   }
 
   try {
-    const resumed = await razorpay.subscriptions.resume(subscriptionId, {
-      resume_at: resume_at || "now",
-    });
+    const resumed = await withTimeout(
+      razorpay.subscriptions.resume(subscriptionId, {
+        resume_at: resume_at || "now",
+      }),
+      10000
+    );
 
-    const updated = await Subscription.findOneAndUpdate(
-      { subscriptionId },
-      {
-        status: "active",
-        resumedAt: new Date(),
-        currentStart: toDate(resumed.current_start),
-        currentEnd: toDate(resumed.current_end),
-        chargeAt: toDate(resumed.charge_at),
-      },
-      { new: true }
+    const updated = await withTimeout(
+      Subscription.findOneAndUpdate(
+        { subscriptionId },
+        {
+          status: "active",
+          resumedAt: new Date(),
+          currentStart: toDate(resumed.current_start),
+          currentEnd: toDate(resumed.current_end),
+          chargeAt: toDate(resumed.charge_at),
+        },
+        { new: true }
+      ),
+      5000
     );
 
     return res
@@ -551,17 +585,13 @@ export const resumeSubscription = asyncHandler(async (req, res) => {
 // WEBHOOK HANDLER
 // ============================================
 
-/**
- * Handle Razorpay webhooks
- * POST /api/webhooks/razorpay/subscription
- */
 export const subscriptionWebhook = async (req, res) => {
   try {
     const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
 
     if (!webhookSecret) {
       console.error("⚠️ RAZORPAY_WEBHOOK_SECRET not configured");
-      return res.status(200).json({ received: true }); // Still return 200
+      return res.status(200).json({ received: true });
     }
 
     const receivedSignature = req.headers["x-razorpay-signature"];
@@ -571,13 +601,11 @@ export const subscriptionWebhook = async (req, res) => {
       return res.status(200).json({ received: true });
     }
 
-    // req.rawBody must be set by middleware
     if (!req.rawBody) {
       console.error("⚠️ req.rawBody not available. Check webhook middleware.");
       return res.status(200).json({ received: true });
     }
 
-    // Verify signature
     const expectedSignature = crypto
       .createHmac("sha256", webhookSecret)
       .update(req.rawBody)
@@ -591,7 +619,6 @@ export const subscriptionWebhook = async (req, res) => {
     const event = req.body.event;
     console.log(`📥 Webhook received: ${event}`);
 
-    // Handle different events
     switch (event) {
       case "subscription.activated":
         await handleSubscriptionActivated(req.body.payload);
@@ -637,11 +664,14 @@ export const subscriptionWebhook = async (req, res) => {
         console.log(`ℹ️ Unhandled event: ${event}`);
     }
 
-    // Always return 200 to prevent Razorpay retries
     return res.status(200).json({ received: true });
   } catch (error) {
-    console.error("❌ Webhook processing error:", error);
-    // Still return 200 to prevent retries
+    console.error("❌ Webhook processing error:", {
+      message: error.message,
+      stack: error.stack,
+      event: req.body?.event,
+    });
+
     return res.status(200).json({ received: true });
   }
 };
@@ -654,20 +684,23 @@ async function handleSubscriptionActivated(payload) {
   try {
     const subscription = payload.subscription.entity;
 
-    const updated = await Subscription.findOneAndUpdate(
-      { subscriptionId: subscription.id },
-      {
-        status: "active",
-        startAt: toDate(subscription.start_at),
-        endAt: toDate(subscription.end_at),
-        currentStart: toDate(subscription.current_start),
-        currentEnd: toDate(subscription.current_end),
-        chargeAt: toDate(subscription.charge_at),
-        activatedAt: new Date(),
-        paidCount: subscription.paid_count || 0,
-        remainingCount:
-          subscription.remaining_count ?? subscription.total_count,
-      }
+    const updated = await withTimeout(
+      Subscription.findOneAndUpdate(
+        { subscriptionId: subscription.id },
+        {
+          status: "active",
+          startAt: toDate(subscription.start_at),
+          endAt: toDate(subscription.end_at),
+          currentStart: toDate(subscription.current_start),
+          currentEnd: toDate(subscription.current_end),
+          chargeAt: toDate(subscription.charge_at),
+          activatedAt: new Date(),
+          paidCount: subscription.paid_count || 0,
+          remainingCount:
+            subscription.remaining_count ?? subscription.total_count,
+        }
+      ),
+      5000
     );
 
     if (!updated) {
@@ -687,11 +720,14 @@ async function handleSubscriptionAuthenticated(payload) {
   try {
     const subscription = payload.subscription.entity;
 
-    const updated = await Subscription.findOneAndUpdate(
-      { subscriptionId: subscription.id },
-      {
-        status: "authenticated",
-      }
+    const updated = await withTimeout(
+      Subscription.findOneAndUpdate(
+        { subscriptionId: subscription.id },
+        {
+          status: "authenticated",
+        }
+      ),
+      5000
     );
 
     if (!updated) {
@@ -712,19 +748,22 @@ async function handleSubscriptionCharged(payload) {
     const payment = payload.payment.entity;
     const subscription = payload.subscription.entity;
 
-    const updated = await Subscription.findOneAndUpdate(
-      { subscriptionId: subscription.id },
-      {
-        status: subscription.status,
-        lastPaymentId: payment.id,
-        lastChargedAt: new Date(),
-        paidCount: subscription.paid_count,
-        remainingCount:
-          subscription.remaining_count ?? subscription.total_count,
-        currentStart: toDate(subscription.current_start),
-        currentEnd: toDate(subscription.current_end),
-        chargeAt: toDate(subscription.charge_at),
-      }
+    const updated = await withTimeout(
+      Subscription.findOneAndUpdate(
+        { subscriptionId: subscription.id },
+        {
+          status: subscription.status,
+          lastPaymentId: payment.id,
+          lastChargedAt: new Date(),
+          paidCount: subscription.paid_count,
+          remainingCount:
+            subscription.remaining_count ?? subscription.total_count,
+          currentStart: toDate(subscription.current_start),
+          currentEnd: toDate(subscription.current_end),
+          chargeAt: toDate(subscription.charge_at),
+        }
+      ),
+      5000
     );
 
     if (!updated) {
@@ -744,13 +783,16 @@ async function handleSubscriptionCompleted(payload) {
   try {
     const subscription = payload.subscription.entity;
 
-    const updated = await Subscription.findOneAndUpdate(
-      { subscriptionId: subscription.id },
-      {
-        status: "completed",
-        completedAt: new Date(),
-        endAt: toDate(subscription.end_at),
-      }
+    const updated = await withTimeout(
+      Subscription.findOneAndUpdate(
+        { subscriptionId: subscription.id },
+        {
+          status: "completed",
+          completedAt: new Date(),
+          endAt: toDate(subscription.end_at),
+        }
+      ),
+      5000
     );
 
     if (!updated) {
@@ -770,13 +812,16 @@ async function handleSubscriptionCancelled(payload) {
   try {
     const subscription = payload.subscription.entity;
 
-    const updated = await Subscription.findOneAndUpdate(
-      { subscriptionId: subscription.id },
-      {
-        status: "cancelled",
-        cancelledAt: new Date(),
-        endAt: subscription.ended_at ? toDate(subscription.ended_at) : null,
-      }
+    const updated = await withTimeout(
+      Subscription.findOneAndUpdate(
+        { subscriptionId: subscription.id },
+        {
+          status: "cancelled",
+          cancelledAt: new Date(),
+          endAt: subscription.ended_at ? toDate(subscription.ended_at) : null,
+        }
+      ),
+      5000
     );
 
     if (!updated) {
@@ -796,15 +841,18 @@ async function handleSubscriptionPaused(payload) {
   try {
     const subscription = payload.subscription.entity;
 
-    const updated = await Subscription.findOneAndUpdate(
-      { subscriptionId: subscription.id },
-      {
-        status: "paused",
-        pausedAt: new Date(),
-        currentStart: toDate(subscription.current_start),
-        currentEnd: toDate(subscription.current_end),
-        chargeAt: toDate(subscription.charge_at),
-      }
+    const updated = await withTimeout(
+      Subscription.findOneAndUpdate(
+        { subscriptionId: subscription.id },
+        {
+          status: "paused",
+          pausedAt: new Date(),
+          currentStart: toDate(subscription.current_start),
+          currentEnd: toDate(subscription.current_end),
+          chargeAt: toDate(subscription.charge_at),
+        }
+      ),
+      5000
     );
 
     if (!updated) {
@@ -824,15 +872,18 @@ async function handleSubscriptionResumed(payload) {
   try {
     const subscription = payload.subscription.entity;
 
-    const updated = await Subscription.findOneAndUpdate(
-      { subscriptionId: subscription.id },
-      {
-        status: "active",
-        resumedAt: new Date(),
-        currentStart: toDate(subscription.current_start),
-        currentEnd: toDate(subscription.current_end),
-        chargeAt: toDate(subscription.charge_at),
-      }
+    const updated = await withTimeout(
+      Subscription.findOneAndUpdate(
+        { subscriptionId: subscription.id },
+        {
+          status: "active",
+          resumedAt: new Date(),
+          currentStart: toDate(subscription.current_start),
+          currentEnd: toDate(subscription.current_end),
+          chargeAt: toDate(subscription.charge_at),
+        }
+      ),
+      5000
     );
 
     if (!updated) {
@@ -852,11 +903,14 @@ async function handleSubscriptionPending(payload) {
   try {
     const subscription = payload.subscription.entity;
 
-    const updated = await Subscription.findOneAndUpdate(
-      { subscriptionId: subscription.id },
-      {
-        status: "pending",
-      }
+    const updated = await withTimeout(
+      Subscription.findOneAndUpdate(
+        { subscriptionId: subscription.id },
+        {
+          status: "pending",
+        }
+      ),
+      5000
     );
 
     if (!updated) {
@@ -876,12 +930,15 @@ async function handleSubscriptionHalted(payload) {
   try {
     const subscription = payload.subscription.entity;
 
-    const updated = await Subscription.findOneAndUpdate(
-      { subscriptionId: subscription.id },
-      {
-        status: "halted",
-        haltedAt: new Date(),
-      }
+    const updated = await withTimeout(
+      Subscription.findOneAndUpdate(
+        { subscriptionId: subscription.id },
+        {
+          status: "halted",
+          haltedAt: new Date(),
+        }
+      ),
+      5000
     );
 
     if (!updated) {
@@ -902,13 +959,16 @@ async function handlePaymentFailed(payload) {
     const payment = payload.payment.entity;
 
     if (payment.subscription_id) {
-      const updated = await Subscription.findOneAndUpdate(
-        { subscriptionId: payment.subscription_id },
-        {
-          lastFailedPaymentId: payment.id,
-          lastFailedAt: new Date(),
-          failureReason: payment.error_description || "Payment failed",
-        }
+      const updated = await withTimeout(
+        Subscription.findOneAndUpdate(
+          { subscriptionId: payment.subscription_id },
+          {
+            lastFailedPaymentId: payment.id,
+            lastFailedAt: new Date(),
+            failureReason: payment.error_description || "Payment failed",
+          }
+        ),
+        5000
       );
 
       if (!updated) {
@@ -924,4 +984,3 @@ async function handlePaymentFailed(payload) {
     console.error("❌ Error handling payment.failed:", error);
   }
 }
-
