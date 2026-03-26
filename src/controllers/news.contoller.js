@@ -29,15 +29,25 @@ export const createNews = asyncHandler(async (req, res) => {
 });
 
 export const getAllNews = asyncHandler(async (req, res) => {
-  const page = Math.max(1, Number(req.query.page) || 1);
-  const limit = Math.min(20, Number(req.query.limit) || 10);
+  const parsedPage = Number(req.query.page);
+  const parsedLimit = Number(req.query.limit);
+  const page = Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1;
+  const limit =
+    Number.isFinite(parsedLimit) && parsedLimit > 0
+      ? Math.min(20, parsedLimit)
+      : 10;
   const skip = (page - 1) * limit;
 
   const news = await News.find({}, "heading slug createdAt")
     .sort({ createdAt: -1 })
     .skip(skip)
-    .limit(limit)
+    .limit(limit + 1)
     .lean();
+
+  const hasMore = news.length > limit;
+  if (hasMore) {
+    news.pop();
+  }
 
   if (news.length === 0) {
     return res
@@ -53,7 +63,7 @@ export const getAllNews = asyncHandler(async (req, res) => {
         pagination: {
           page,
           limit,
-          hasMore: news.length === limit,
+          hasMore,
         },
       },
       "News fetched successfully"

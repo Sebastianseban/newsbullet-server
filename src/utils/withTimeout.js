@@ -5,6 +5,7 @@ export const withTimeout = async (promise, ms = 10000) => {
     timeout = setTimeout(() => {
       reject(new Error("Request timed out"));
     }, ms);
+    timeout.unref?.();
   });
 
   try {

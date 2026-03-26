@@ -24,6 +24,8 @@ const userSchema = new mongoose.Schema(
       type: String,
       trim: true,
       index: true,
+      unique: true,
+      sparse: true,
       match: [/^[6-9]\d{9}$/, "Please provide a valid Indian mobile number"],
     },
 

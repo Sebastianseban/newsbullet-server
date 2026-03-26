@@ -1,14 +1,37 @@
 import Subscription from "../models/Subscription.js";
-import { razorpay } from "../utils/razorpayInstance.js";
+import { getRazorpayInstance } from "../utils/razorpayInstance.js";
 import { ApiError } from "../utils/ApiError.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import Plan from "../models/Plan.js";
 import crypto from "crypto";
 import { withTimeout } from "../utils/withTimeout.js";
+import { acquireJobLock, releaseJobLock } from "../utils/jobLock.js";
 
 // Helper to convert Razorpay UNIX timestamps (seconds) to JS Date
 const toDate = (ts) => (ts ? new Date(ts * 1000) : null);
+const getRazorpayClient = () => {
+  try {
+    return getRazorpayInstance();
+  } catch (error) {
+    throw new ApiError(500, error.message);
+  }
+};
+const isPlainObject = (value) =>
+  value !== null &&
+  typeof value === "object" &&
+  !Array.isArray(value) &&
+  Object.getPrototypeOf(value) === Object.prototype;
+const hasValidWebhookSignature = (receivedSignature, expectedSignature) => {
+  const receivedBuffer = Buffer.from(receivedSignature, "utf8");
+  const expectedBuffer = Buffer.from(expectedSignature, "utf8");
+
+  if (receivedBuffer.length !== expectedBuffer.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(receivedBuffer, expectedBuffer);
+};
 
 // ============================================
 // PLAN MANAGEMENT
@@ -20,8 +43,14 @@ const toDate = (ts) => (ts ? new Date(ts * 1000) : null);
  */
 export const createPlan = asyncHandler(async (req, res) => {
   const { name, amount, interval, period, description } = req.body;
+  const razorpay = getRazorpayClient();
+  const normalizedName = typeof name === "string" ? name.trim() : "";
+  const normalizedDescription =
+    typeof description === "string" ? description.trim() : normalizedName;
+  const parsedAmount = Number(amount);
+  const parsedInterval = Number(interval);
 
-  if (!name || !amount || !period || !interval) {
+  if (!normalizedName || !period || Number.isNaN(parsedAmount) || Number.isNaN(parsedInterval)) {
     throw new ApiError(400, "Name, amount, period, and interval are required");
   }
 
@@ -30,20 +59,24 @@ export const createPlan = asyncHandler(async (req, res) => {
     throw new ApiError(400, `Period must be one of: ${validPeriods.join(", ")}`);
   }
 
-  if (isNaN(interval) || Number(interval) <= 0) {
+  if (!Number.isInteger(parsedInterval) || parsedInterval <= 0) {
     throw new ApiError(400, "Interval must be a positive number");
+  }
+
+  if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+    throw new ApiError(400, "Amount must be a positive number");
   }
 
   try {
     const plan = await withTimeout(
       razorpay.plans.create({
         period,
-        interval: Number(interval),
+        interval: parsedInterval,
         item: {
-          name,
-          amount: Number(amount) * 100,
+          name: normalizedName,
+          amount: Math.round(parsedAmount * 100),
           currency: "INR",
-          description: description || name,
+          description: normalizedDescription,
         },
       }),
       10000
@@ -85,6 +118,7 @@ export const createPlan = asyncHandler(async (req, res) => {
  */
 export const getAllPlans = asyncHandler(async (req, res) => {
   try {
+    const razorpay = getRazorpayClient();
     const activePlans = await withTimeout(
       Plan.find({ isActive: true }).lean(),
       5000
@@ -130,6 +164,11 @@ export const getAllPlans = asyncHandler(async (req, res) => {
  */
 export const getPlanById = asyncHandler(async (req, res) => {
   const { planId } = req.params;
+  const razorpay = getRazorpayClient();
+
+  if (!planId || typeof planId !== "string") {
+    throw new ApiError(400, "planId is required");
+  }
 
   try {
     const plan = await withTimeout(razorpay.plans.fetch(planId), 10000);
@@ -150,7 +189,11 @@ export const getPlanById = asyncHandler(async (req, res) => {
     );
   } catch (err) {
     console.error("Failed to fetch plan:", err);
-    throw new ApiError(404, "Plan not found");
+    if (err?.statusCode === 404 || err?.error?.code === "BAD_REQUEST_ERROR") {
+      throw new ApiError(404, "Plan not found");
+    }
+
+    throw new ApiError(500, `Failed to fetch plan: ${err.message}`);
   }
 });
 
@@ -190,140 +233,207 @@ export const deletePlan = asyncHandler(async (req, res) => {
 export const createSubscription = asyncHandler(async (req, res) => {
   const { plan_id, total_count, notes } = req.body;
   const userId = req.user._id;
+  const razorpay = getRazorpayClient();
+  let lockAcquired = false;
+  let subscription;
 
-  if (!plan_id) {
+  if (!plan_id || typeof plan_id !== "string") {
     throw new ApiError(400, "plan_id is required");
   }
+
+  const normalizedPlanId = plan_id.trim();
+
+  if (!normalizedPlanId) {
+    throw new ApiError(400, "plan_id is required");
+  }
+
+  const subscriptionLockKey = `subscription-create:${userId}:${normalizedPlanId}`;
+  const lockOwner = `subscription-controller-${process.pid}-${crypto.randomUUID()}`;
 
   if (!req.user.email) {
     throw new ApiError(400, "User email is required for subscription");
   }
 
-  const activePlan = await withTimeout(
-    Plan.findOne({
-      razorpayPlanId: plan_id,
-      isActive: true,
-    }),
-    5000
-  );
-
-  if (!activePlan) {
-    throw new ApiError(400, "Selected plan is not available");
+  if (
+    total_count !== undefined &&
+    (!Number.isInteger(Number(total_count)) || Number(total_count) <= 0)
+  ) {
+    throw new ApiError(400, "total_count must be a positive integer");
   }
 
-  const existingSubscription = await withTimeout(
-    Subscription.findOne({
-      userId,
-      planId: plan_id,
-      status: { $in: ["created", "authenticated", "active", "pending"] },
-    }),
-    5000
-  );
+  if (notes !== undefined && !isPlainObject(notes)) {
+    throw new ApiError(400, "notes must be a valid object");
+  }
 
-  if (existingSubscription) {
-    if (["created", "authenticated"].includes(existingSubscription.status)) {
-      return res.status(200).json(
-        new ApiResponse(
-          200,
-          {
-            subscription: {
-              id: existingSubscription.subscriptionId,
-              short_url: existingSubscription.shortUrl,
-              status: existingSubscription.status,
-            },
-          },
-          "Pending subscription found. Please complete the payment."
-        )
-      );
-    }
+  lockAcquired = await acquireJobLock({
+    jobName: subscriptionLockKey,
+    ownerId: lockOwner,
+    ttlMs: 30000,
+  });
 
+  if (!lockAcquired) {
     throw new ApiError(
-      400,
-      "You already have an active subscription for this plan"
+      409,
+      "A subscription request is already being processed for this plan"
     );
   }
 
-  let customer;
+  try {
+    const activePlan = await withTimeout(
+      Plan.findOne({
+        razorpayPlanId: normalizedPlanId,
+        isActive: true,
+      }),
+      5000
+    );
 
-  const oldCustomer = await withTimeout(
-    Subscription.findOne({
-      userId,
-      customerId: { $exists: true, $ne: null },
-    }).select("customerId"),
-    5000
-  );
+    if (!activePlan) {
+      throw new ApiError(400, "Selected plan is not available");
+    }
 
-  if (oldCustomer?.customerId) {
-    try {
+    const existingSubscription = await withTimeout(
+      Subscription.findOne({
+        userId,
+        planId: normalizedPlanId,
+        status: { $in: ["created", "authenticated", "active", "pending"] },
+      }),
+      5000
+    );
+
+    if (existingSubscription) {
+      if (["created", "authenticated"].includes(existingSubscription.status)) {
+        return res.status(200).json(
+          new ApiResponse(
+            200,
+            {
+              subscription: {
+                id: existingSubscription.subscriptionId,
+                short_url: existingSubscription.shortUrl,
+                status: existingSubscription.status,
+              },
+            },
+            "Pending subscription found. Please complete the payment."
+          )
+        );
+      }
+
+      throw new ApiError(
+        400,
+        "You already have an active subscription for this plan"
+      );
+    }
+
+    let customer;
+
+    const oldCustomer = await withTimeout(
+      Subscription.findOne({
+        userId,
+        customerId: { $exists: true, $ne: null },
+      }).select("customerId"),
+      5000
+    );
+
+    if (oldCustomer?.customerId) {
+      try {
+        customer = await withTimeout(
+          razorpay.customers.fetch(oldCustomer.customerId),
+          10000
+        );
+      } catch {
+        customer = null;
+      }
+    }
+
+    if (!customer) {
       customer = await withTimeout(
-        razorpay.customers.fetch(oldCustomer.customerId),
+        razorpay.customers.create({
+          name: req.user.name || "User",
+          email: req.user.email,
+          contact: req.user.phone || "",
+          fail_existing: 0,
+        }),
         10000
       );
-    } catch {
-      customer = null;
     }
-  }
 
-  if (!customer) {
-    customer = await withTimeout(
-      razorpay.customers.create({
-        name: req.user.name || "User",
-        email: req.user.email,
-        contact: req.user.phone || "",
-        fail_existing: 0,
+    subscription = await withTimeout(
+      razorpay.subscriptions.create({
+        plan_id: normalizedPlanId,
+        customer_id: customer.id,
+        total_count: Number.isInteger(Number(total_count))
+          ? Number(total_count)
+          : 12,
+        quantity: 1,
+        customer_notify: 1,
+        notes: notes || {},
       }),
       10000
     );
-  }
 
-  const subscription = await withTimeout(
-    razorpay.subscriptions.create({
-      plan_id,
-      customer_id: customer.id,
-      total_count: total_count || 12,
-      quantity: 1,
-      customer_notify: 1,
-      notes: notes || {},
-    }),
-    10000
-  );
+    const dbSubscription = await withTimeout(
+      Subscription.create({
+        userId,
+        subscriptionId: subscription.id,
+        planId: normalizedPlanId,
+        customerId: customer.id,
+        status: subscription.status,
+        shortUrl: subscription.short_url,
+        totalCount: subscription.total_count,
+        paidCount: subscription.paid_count || 0,
+        remainingCount:
+          subscription.remaining_count ?? subscription.total_count,
+        startAt: toDate(subscription.start_at),
+        endAt: toDate(subscription.end_at),
+        chargeAt: toDate(subscription.charge_at),
+        currentStart: toDate(subscription.current_start),
+        currentEnd: toDate(subscription.current_end),
+        notes: subscription.notes,
+      }),
+      5000
+    );
 
-  const dbSubscription = await withTimeout(
-    Subscription.create({
-      userId,
-      subscriptionId: subscription.id,
-      planId: plan_id,
-      customerId: customer.id,
-      status: subscription.status,
-      shortUrl: subscription.short_url,
-      totalCount: subscription.total_count,
-      paidCount: subscription.paid_count || 0,
-      remainingCount:
-        subscription.remaining_count ?? subscription.total_count,
-      startAt: toDate(subscription.start_at),
-      endAt: toDate(subscription.end_at),
-      chargeAt: toDate(subscription.charge_at),
-      currentStart: toDate(subscription.current_start),
-      currentEnd: toDate(subscription.current_end),
-      notes: subscription.notes,
-    }),
-    5000
-  );
-
-  return res.status(201).json(
-    new ApiResponse(
-      201,
-      {
-        subscription: {
-          id: subscription.id,
-          short_url: subscription.short_url,
-          status: subscription.status,
+    return res.status(201).json(
+      new ApiResponse(
+        201,
+        {
+          subscription: {
+            id: subscription.id,
+            short_url: subscription.short_url,
+            status: subscription.status,
+          },
+          dbRecord: dbSubscription,
         },
-        dbRecord: dbSubscription,
-      },
-      "Subscription created successfully. Please complete the payment."
-    )
-  );
+        "Subscription created successfully. Please complete the payment."
+      )
+    );
+  } catch (error) {
+    if (subscription?.id) {
+      try {
+        await withTimeout(
+          razorpay.subscriptions.cancel(subscription.id, {
+            cancel_at_cycle_end: false,
+          }),
+          10000
+        );
+      } catch (cancelError) {
+        console.error(
+          "Failed to rollback Razorpay subscription after local error:",
+          cancelError
+        );
+      }
+    }
+
+    throw error;
+  } finally {
+    if (lockAcquired) {
+      await releaseJobLock({
+        jobName: subscriptionLockKey,
+        ownerId: lockOwner,
+      }).catch((releaseError) => {
+        console.error("Failed to release subscription lock:", releaseError);
+      });
+    }
+  }
 });
 
 /**
@@ -333,6 +443,13 @@ export const createSubscription = asyncHandler(async (req, res) => {
 export const getUserSubscriptions = asyncHandler(async (req, res) => {
   const userId = req.user._id;
   const { status } = req.query;
+  const parsedPage = Number(req.query.page);
+  const parsedLimit = Number(req.query.limit);
+  const page = Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1;
+  const limit =
+    Number.isFinite(parsedLimit) && parsedLimit > 0
+      ? Math.min(20, parsedLimit)
+      : 10;
 
   const filter = { userId };
   if (status) {
@@ -340,14 +457,30 @@ export const getUserSubscriptions = asyncHandler(async (req, res) => {
   }
 
   const subscriptions = await withTimeout(
-    Subscription.find(filter).sort({ createdAt: -1 }).lean(),
+    Subscription.find(filter)
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit + 1)
+      .lean(),
     5000
   );
+
+  const hasMore = subscriptions.length > limit;
+  if (hasMore) {
+    subscriptions.pop();
+  }
 
   return res.status(200).json(
     new ApiResponse(
       200,
-      subscriptions,
+      {
+        subscriptions,
+        pagination: {
+          page,
+          limit,
+          hasMore,
+        },
+      },
       "User subscriptions fetched successfully"
     )
   );
@@ -360,6 +493,7 @@ export const getUserSubscriptions = asyncHandler(async (req, res) => {
 export const getSubscription = asyncHandler(async (req, res) => {
   const { subscriptionId } = req.params;
   const userId = req.user._id;
+  const razorpay = getRazorpayClient();
 
   const subscription = await withTimeout(
     Subscription.findOne({
@@ -405,6 +539,7 @@ export const cancelSubscription = asyncHandler(async (req, res) => {
   const { subscriptionId } = req.params;
   const { cancel_at_cycle_end } = req.body;
   const userId = req.user._id;
+  const razorpay = getRazorpayClient();
 
   const subscription = await withTimeout(
     Subscription.findOne({
@@ -469,6 +604,15 @@ export const pauseSubscription = asyncHandler(async (req, res) => {
   const { subscriptionId } = req.params;
   const { pause_at } = req.body;
   const userId = req.user._id;
+  const razorpay = getRazorpayClient();
+
+  if (
+    pause_at !== undefined &&
+    pause_at !== "now" &&
+    (!Number.isInteger(Number(pause_at)) || Number(pause_at) <= 0)
+  ) {
+    throw new ApiError(400, "pause_at must be 'now' or a valid timestamp");
+  }
 
   const subscription = await withTimeout(
     Subscription.findOne({
@@ -529,6 +673,15 @@ export const resumeSubscription = asyncHandler(async (req, res) => {
   const { subscriptionId } = req.params;
   const { resume_at } = req.body;
   const userId = req.user._id;
+  const razorpay = getRazorpayClient();
+
+  if (
+    resume_at !== undefined &&
+    resume_at !== "now" &&
+    (!Number.isInteger(Number(resume_at)) || Number(resume_at) <= 0)
+  ) {
+    throw new ApiError(400, "resume_at must be 'now' or a valid timestamp");
+  }
 
   const subscription = await withTimeout(
     Subscription.findOne({
@@ -591,19 +744,19 @@ export const subscriptionWebhook = async (req, res) => {
 
     if (!webhookSecret) {
       console.error("⚠️ RAZORPAY_WEBHOOK_SECRET not configured");
-      return res.status(200).json({ received: true });
+      return res.status(503).json({ received: false, message: "Webhook secret missing" });
     }
 
     const receivedSignature = req.headers["x-razorpay-signature"];
 
     if (!receivedSignature) {
       console.error("⚠️ Missing webhook signature");
-      return res.status(200).json({ received: true });
+      return res.status(400).json({ received: false, message: "Missing signature" });
     }
 
     if (!req.rawBody) {
       console.error("⚠️ req.rawBody not available. Check webhook middleware.");
-      return res.status(200).json({ received: true });
+      return res.status(400).json({ received: false, message: "Missing raw body" });
     }
 
     const expectedSignature = crypto
@@ -611,9 +764,9 @@ export const subscriptionWebhook = async (req, res) => {
       .update(req.rawBody)
       .digest("hex");
 
-    if (receivedSignature !== expectedSignature) {
+    if (!hasValidWebhookSignature(receivedSignature, expectedSignature)) {
       console.error("⚠️ Invalid webhook signature");
-      return res.status(200).json({ received: true });
+      return res.status(401).json({ received: false, message: "Invalid signature" });
     }
 
     const event = req.body.event;
@@ -672,7 +825,9 @@ export const subscriptionWebhook = async (req, res) => {
       event: req.body?.event,
     });
 
-    return res.status(200).json({ received: true });
+    return res
+      .status(500)
+      .json({ received: false, message: "Webhook processing failed" });
   }
 };
 
@@ -713,6 +868,7 @@ async function handleSubscriptionActivated(payload) {
     }
   } catch (error) {
     console.error("❌ Error handling subscription.activated:", error);
+    throw error;
   }
 }
 
@@ -740,6 +896,7 @@ async function handleSubscriptionAuthenticated(payload) {
     }
   } catch (error) {
     console.error("❌ Error handling subscription.authenticated:", error);
+    throw error;
   }
 }
 
@@ -776,6 +933,7 @@ async function handleSubscriptionCharged(payload) {
     }
   } catch (error) {
     console.error("❌ Error handling subscription.charged:", error);
+    throw error;
   }
 }
 
@@ -805,6 +963,7 @@ async function handleSubscriptionCompleted(payload) {
     }
   } catch (error) {
     console.error("❌ Error handling subscription.completed:", error);
+    throw error;
   }
 }
 
@@ -834,6 +993,7 @@ async function handleSubscriptionCancelled(payload) {
     }
   } catch (error) {
     console.error("❌ Error handling subscription.cancelled:", error);
+    throw error;
   }
 }
 
@@ -865,6 +1025,7 @@ async function handleSubscriptionPaused(payload) {
     }
   } catch (error) {
     console.error("❌ Error handling subscription.paused:", error);
+    throw error;
   }
 }
 
@@ -896,6 +1057,7 @@ async function handleSubscriptionResumed(payload) {
     }
   } catch (error) {
     console.error("❌ Error handling subscription.resumed:", error);
+    throw error;
   }
 }
 
@@ -923,6 +1085,7 @@ async function handleSubscriptionPending(payload) {
     }
   } catch (error) {
     console.error("❌ Error handling subscription.pending:", error);
+    throw error;
   }
 }
 
@@ -951,6 +1114,7 @@ async function handleSubscriptionHalted(payload) {
     }
   } catch (error) {
     console.error("❌ Error handling subscription.halted:", error);
+    throw error;
   }
 }
 
@@ -982,5 +1146,6 @@ async function handlePaymentFailed(payload) {
     }
   } catch (error) {
     console.error("❌ Error handling payment.failed:", error);
+    throw error;
   }
 }
