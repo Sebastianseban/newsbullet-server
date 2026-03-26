@@ -4,11 +4,14 @@ import { ApiResponse } from "../utils/ApiResponse.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { nanoid } from "nanoid";
 
-
 export const createNews = asyncHandler(async (req, res) => {
   const { heading, body } = req.body;
 
-  if (!heading || !body) {
+  if (typeof heading !== "string" || typeof body !== "string") {
+    throw new ApiError(400, "Heading and body must be valid strings");
+  }
+
+  if (!heading.trim() || !body.trim()) {
     throw new ApiError(400, "Required fields are missing");
   }
 
@@ -17,7 +20,7 @@ export const createNews = asyncHandler(async (req, res) => {
   const news = await News.create({
     heading: heading.trim(),
     body: body.trim(),
-    slug
+    slug,
   });
 
   return res
@@ -25,31 +28,47 @@ export const createNews = asyncHandler(async (req, res) => {
     .json(new ApiResponse(201, { news }, "News created successfully"));
 });
 
-
 export const getAllNews = asyncHandler(async (req, res) => {
-  const news = await News.find().sort({ createdAt: -1 });
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const limit = Math.min(20, Number(req.query.limit) || 10);
+  const skip = (page - 1) * limit;
 
-  // news will never be null (find() returns empty array)
+  const news = await News.find({}, "heading slug createdAt")
+    .sort({ createdAt: -1 })
+    .skip(skip)
+    .limit(limit)
+    .lean();
+
   if (news.length === 0) {
     return res
       .status(200)
       .json(new ApiResponse(200, { news: [] }, "No news available"));
   }
 
-  return res
-    .status(200)
-    .json(new ApiResponse(200, { news }, "News fetched successfully"));
+  return res.status(200).json(
+    new ApiResponse(
+      200,
+      {
+        news,
+        pagination: {
+          page,
+          limit,
+          hasMore: news.length === limit,
+        },
+      },
+      "News fetched successfully"
+    )
+  );
 });
-
 
 export const getNewsBySlug = asyncHandler(async (req, res) => {
   const { slug } = req.params;
 
-  if (!slug) {
+  if (!slug || typeof slug !== "string") {
     throw new ApiError(400, "Slug value is required");
   }
 
-  const news = await News.findOne({ slug });
+  const news = await News.findOne({ slug }).lean();
 
   if (!news) {
     throw new ApiError(404, "News not found");
@@ -60,30 +79,36 @@ export const getNewsBySlug = asyncHandler(async (req, res) => {
     .json(new ApiResponse(200, { news }, "News fetched successfully"));
 });
 
-
 export const updateNews = asyncHandler(async (req, res) => {
   const { slug } = req.params;
   const { heading, body } = req.body;
 
-  if (!slug) {
+  if (!slug || typeof slug !== "string") {
     throw new ApiError(400, "Slug is required");
   }
 
-  // Build dynamic update object (senior dev pattern)
   const updateData = {};
-  if (heading?.trim()) updateData.heading = heading.trim();
-  if (body?.trim()) updateData.body = body.trim();
 
-  // Nothing to update
+  if (typeof heading === "string" && heading.trim()) {
+    updateData.heading = heading.trim();
+  }
+
+  if (typeof body === "string" && body.trim()) {
+    updateData.body = body.trim();
+  }
+
   if (Object.keys(updateData).length === 0) {
-    throw new ApiError(400, "At least one field (heading or body) must be provided");
+    throw new ApiError(
+      400,
+      "At least one field (heading or body) must be provided"
+    );
   }
 
   const news = await News.findOneAndUpdate(
     { slug },
     { $set: updateData },
     { new: true, runValidators: true }
-  );
+  ).lean();
 
   if (!news) {
     throw new ApiError(404, "No news article found for the provided slug");
@@ -94,22 +119,18 @@ export const updateNews = asyncHandler(async (req, res) => {
     .json(new ApiResponse(200, { news }, "News updated successfully"));
 });
 
-
 export const deleteNews = asyncHandler(async (req, res) => {
   const { slug } = req.params;
 
-  if (!slug) {
+  if (!slug || typeof slug !== "string") {
     throw new ApiError(400, "Slug is required");
   }
 
-  // Check if the news exists before deleting (cleaner error)
-  const existing = await News.findOne({ slug });
+  const deleted = await News.findOneAndDelete({ slug });
 
-  if (!existing) {
+  if (!deleted) {
     throw new ApiError(404, "No news article found for the provided slug");
   }
-
-  await News.deleteOne({ slug });
 
   return res
     .status(200)
