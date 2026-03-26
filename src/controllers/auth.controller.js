@@ -39,22 +39,22 @@ export const registerUser = asyncHandler(async (req, res) => {
   if (typeof phone === "string") phone = phone.trim();
 
   // 🔍 Validation
-  if (!name) {
+  if (typeof name !== "string" || !name) {
     errors.push({ field: "name", message: "Name is required" });
   }
 
-  if (!email) {
+  if (typeof email !== "string" || !email) {
     errors.push({ field: "email", message: "Email is required" });
   }
 
-  if (!phone || !/^[6-9]\d{9}$/.test(phone)) {
+  if (typeof phone !== "string" || !phone || !/^[6-9]\d{9}$/.test(phone)) {
     errors.push({
       field: "phone",
       message: "Valid Indian phone number is required",
     });
   }
 
-  if (!password) {
+  if (typeof password !== "string" || !password) {
     errors.push({ field: "password", message: "Password is required" });
   }
 
@@ -117,6 +117,12 @@ export const registerUser = asyncHandler(async (req, res) => {
 
 export const loginUser = asyncHandler(async (req, res) => {
   let { identifier, password } = req.body;
+
+  if (typeof identifier !== "string" || typeof password !== "string") {
+    throw new ApiError(400, "Identifier and password must be valid strings");
+  }
+
+  identifier = identifier.trim();
 
   if (!identifier || !password) {
     throw new ApiError(400, "Identifier and password are required");
