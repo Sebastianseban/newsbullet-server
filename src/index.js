@@ -1,10 +1,15 @@
 import { app } from "./app.js";
-import { PORT } from "./config/config.js";
+import {
+  PORT,
+  STARTUP_DB_RETRY_ATTEMPTS,
+  STARTUP_DB_RETRY_DELAY_MS,
+} from "./config/config.js";
 import connectDB from "./db/database.js";
 import mongoose from "mongoose";
 
 let server;
 let isShuttingDown = false;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Graceful shutdown
@@ -44,7 +49,29 @@ const shutdown = async (signal) => {
  */
 const startServer = async () => {
   try {
-    await connectDB();
+    let lastError;
+
+    for (let attempt = 1; attempt <= STARTUP_DB_RETRY_ATTEMPTS; attempt += 1) {
+      try {
+        await connectDB();
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error;
+        console.error(
+          `❌ MongoDB bootstrap attempt ${attempt}/${STARTUP_DB_RETRY_ATTEMPTS} failed:`,
+          error.message
+        );
+
+        if (attempt < STARTUP_DB_RETRY_ATTEMPTS) {
+          await sleep(STARTUP_DB_RETRY_DELAY_MS);
+        }
+      }
+    }
+
+    if (lastError) {
+      throw lastError;
+    }
 
     server = app.listen(PORT || 5000, () => {
       console.log(`🚀 Server is running on port ${PORT || 5000}`);
@@ -60,6 +87,7 @@ const startServer = async () => {
  */
 process.on("unhandledRejection", (reason) => {
   console.error("💥 Unhandled Promise Rejection:", reason);
+  shutdown("unhandledRejection");
 });
 
 process.on("uncaughtException", (error) => {
