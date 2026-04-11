@@ -8,6 +8,9 @@ import {
   WORKER_CRON_SCHEDULE,
   WORKER_CRON_TIMEZONE,
 } from "./config/config.js";
+import { logger } from "./utils/logger.js";
+
+const log = logger.child({ service: "worker" });
 
 let isShuttingDown = false;
 let scheduledTask;
@@ -19,7 +22,7 @@ const shutdown = async (signal) => {
   }
 
   isShuttingDown = true;
-  console.log(`⚠️ Worker received ${signal}. Starting shutdown...`);
+  log.warn({ signal }, "worker_shutdown_start");
 
   try {
     if (scheduledTask) {
@@ -32,7 +35,7 @@ const shutdown = async (signal) => {
 
     process.exit(0);
   } catch (error) {
-    console.error("❌ Worker shutdown failed:", error);
+    log.fatal({ err: error }, "worker_shutdown_failed");
     process.exit(1);
   }
 };
@@ -48,9 +51,13 @@ const startWorker = async () => {
         break;
       } catch (error) {
         lastError = error;
-        console.error(
-          `❌ Worker DB bootstrap attempt ${attempt}/${STARTUP_DB_RETRY_ATTEMPTS} failed:`,
-          error.message
+        log.error(
+          {
+            err: error,
+            attempt,
+            maxAttempts: STARTUP_DB_RETRY_ATTEMPTS,
+          },
+          "worker_db_bootstrap_attempt_failed"
         );
 
         if (attempt < STARTUP_DB_RETRY_ATTEMPTS) {
@@ -63,25 +70,25 @@ const startWorker = async () => {
       throw lastError;
     }
 
-    console.log("🟢 Worker started");
+    log.info("worker_started");
 
     // Run once on startup
     await syncYouTubeVideos();
 
     // Schedule job
     scheduledTask = cron.schedule(WORKER_CRON_SCHEDULE, async () => {
-      console.log("⏰ Running daily YouTube sync...");
+      log.info("youtube_sync_cron_tick");
       try {
         await syncYouTubeVideos();
       } catch (error) {
-        console.error("❌ Sync failed:", error.message);
+        log.error({ err: error }, "youtube_sync_cron_failed");
       }
     }, {
       timezone: WORKER_CRON_TIMEZONE,
     });
 
   } catch (error) {
-    console.error("❌ Worker failed to start:", error);
+    log.fatal({ err: error }, "worker_failed_to_start");
     process.exit(1);
   }
 };
@@ -89,10 +96,10 @@ const startWorker = async () => {
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("unhandledRejection", (reason) => {
-  console.error("💥 Worker unhandled rejection (non-fatal):", reason);
+  log.error({ reason }, "worker_unhandled_rejection");
 });
 process.on("uncaughtException", (error) => {
-  console.error("💥 Worker uncaught exception:", error);
+  log.fatal({ err: error }, "worker_uncaught_exception");
   shutdown("uncaughtException");
 });
 
