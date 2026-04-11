@@ -39,6 +39,19 @@ export const YOUTUBE_SYNC_LOCK_TTL_MS =
 export const YOUTUBE_SYNC_MAX_PAGES =
   Number(process.env.YOUTUBE_SYNC_MAX_PAGES) || 5;
 
+/** Behind reverse proxy (NGINX, ALB): set TRUST_PROXY=1 for correct req.ip / rate-limit keys */
+export const TRUST_PROXY =
+  process.env.TRUST_PROXY === "1" || process.env.TRUST_PROXY === "true";
+export const TRUST_PROXY_HOPS = Number(process.env.TRUST_PROXY_HOPS) || 1;
+
+/** Max raw body for Razorpay webhooks (express.raw) */
+export const WEBHOOK_RAW_BODY_LIMIT =
+  process.env.WEBHOOK_RAW_BODY_LIMIT || "512kb";
+
+/** YouTube Data API channel to sync (override in env for non-default deployments) */
+export const YOUTUBE_CHANNEL_ID =
+  process.env.YOUTUBE_CHANNEL_ID || "UCbXD5z_1OflMuiekSJfEO8Q";
+
 // Optional envs (safe to be undefined if feature not used)
 export const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || "";
 export const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || "";

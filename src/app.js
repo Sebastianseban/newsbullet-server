@@ -6,7 +6,12 @@ import helmet from "helmet";
 import mongoose from "mongoose";
 
 import { errorHandler, notFound } from "./middleware/errorHandler.middleware.js";
-import { CORS_ORIGINS } from "./config/config.js";
+import {
+  CORS_ORIGINS,
+  TRUST_PROXY,
+  TRUST_PROXY_HOPS,
+  WEBHOOK_RAW_BODY_LIMIT,
+} from "./config/config.js";
 
 import paymentRoutes from "./routes/payment.routes.js";
 import youtubeRoutes from "./routes/youtube.routes.js";
@@ -17,21 +22,34 @@ import { subscriptionWebhook } from "./controllers/payment.controller.js";
 
 const app = express();
 
+if (TRUST_PROXY) {
+  app.set("trust proxy", TRUST_PROXY_HOPS);
+}
+
 /**
  * 🔒 RAW BODY FOR WEBHOOKS (must be before express.json)
  */
 app.post(
   "/api/webhooks/razorpay/subscription",
-  express.raw({ type: "application/json" }),
-  (req, res, next) => {
+  express.raw({ type: "application/json", limit: WEBHOOK_RAW_BODY_LIMIT }),
+  (req, res) => {
+    const buf = Buffer.isBuffer(req.body)
+      ? req.body
+      : Buffer.from(String(req.body ?? ""), "utf8");
+    req.rawBody = buf.toString("utf8");
+
+    let parsed;
     try {
-      req.rawBody = req.body.toString();
-      req.body = JSON.parse(req.rawBody || "{}");
+      parsed = JSON.parse(req.rawBody || "{}");
     } catch {
-      req.body = {};
+      return res.status(400).json({
+        received: false,
+        message: "Invalid JSON body",
+      });
     }
 
-    return subscriptionWebhook(req, res, next); // ✅ important
+    req.body = parsed;
+    return subscriptionWebhook(req, res);
   }
 );
 

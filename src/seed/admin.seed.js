@@ -4,6 +4,13 @@ import { User } from "../models/User.js";
 
 dotenv.config();
 
+if (process.env.NODE_ENV === "production" && !process.env.ADMIN_PASSWORD) {
+  console.error(
+    "ADMIN_PASSWORD is required when NODE_ENV=production (refusing default credentials)"
+  );
+  process.exit(1);
+}
+
 const seedAdmin = async () => {
   try {
     // Connect DB

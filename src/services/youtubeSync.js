@@ -2,6 +2,7 @@ import axios from "axios";
 import os from "os";
 import YoutubeVideo from "../models/YoutubeVideo.js";
 import {
+  YOUTUBE_CHANNEL_ID,
   YOUTUBE_SYNC_LOCK_TTL_MS,
   YOUTUBE_SYNC_MAX_PAGES,
 } from "../config/config.js";
@@ -32,7 +33,7 @@ export const syncYouTubeVideos = async () => {
     }
 
     const API_KEY = process.env.YOUTUBE_API_KEY;
-    const CHANNEL_ID = "UCbXD5z_1OflMuiekSJfEO8Q";
+    const CHANNEL_ID = YOUTUBE_CHANNEL_ID;
 
     if (!API_KEY) {
       throw new Error("Missing YOUTUBE_API_KEY");

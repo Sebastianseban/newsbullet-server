@@ -89,8 +89,7 @@ const startWorker = async () => {
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("unhandledRejection", (reason) => {
-  console.error("💥 Worker unhandled rejection:", reason);
-  shutdown("unhandledRejection");
+  console.error("💥 Worker unhandled rejection (non-fatal):", reason);
 });
 process.on("uncaughtException", (error) => {
   console.error("💥 Worker uncaught exception:", error);

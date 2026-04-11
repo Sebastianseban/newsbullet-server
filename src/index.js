@@ -84,10 +84,11 @@ const startServer = async () => {
 
 /**
  * Process-level crash handlers
+ * Note: unhandledRejection is logged but does not exit — full shutdown on every
+ * floating promise would be brittle in production. uncaughtException still exits.
  */
 process.on("unhandledRejection", (reason) => {
-  console.error("💥 Unhandled Promise Rejection:", reason);
-  shutdown("unhandledRejection");
+  console.error("💥 Unhandled Promise Rejection (non-fatal):", reason);
 });
 
 process.on("uncaughtException", (error) => {

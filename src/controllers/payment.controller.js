@@ -1,5 +1,8 @@
 import Subscription from "../models/Subscription.js";
-import { getRazorpayInstance } from "../utils/razorpayInstance.js";
+import {
+  deleteRazorpayPlan,
+  getRazorpayInstance,
+} from "../utils/razorpayInstance.js";
 import { ApiError } from "../utils/ApiError.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
@@ -67,8 +70,10 @@ export const createPlan = asyncHandler(async (req, res) => {
     throw new ApiError(400, "Amount must be a positive number");
   }
 
+  let razorpayPlan;
+
   try {
-    const plan = await withTimeout(
+    razorpayPlan = await withTimeout(
       razorpay.plans.create({
         period,
         interval: parsedInterval,
@@ -84,13 +89,13 @@ export const createPlan = asyncHandler(async (req, res) => {
 
     const dbPlan = await withTimeout(
       Plan.create({
-        razorpayPlanId: plan.id,
-        name: plan.item.name,
-        amount: plan.item.amount / 100,
-        currency: plan.item.currency,
-        period: plan.period,
-        interval: plan.interval,
-        description: plan.item.description,
+        razorpayPlanId: razorpayPlan.id,
+        name: razorpayPlan.item.name,
+        amount: razorpayPlan.item.amount / 100,
+        currency: razorpayPlan.item.currency,
+        period: razorpayPlan.period,
+        interval: razorpayPlan.interval,
+        description: razorpayPlan.item.description,
         isActive: true,
       }),
       5000
@@ -100,15 +105,30 @@ export const createPlan = asyncHandler(async (req, res) => {
       new ApiResponse(
         201,
         {
-          razorpay: plan,
+          razorpay: razorpayPlan,
           plan: dbPlan,
         },
         "Plan created successfully"
       )
     );
   } catch (err) {
+    if (razorpayPlan?.id) {
+      try {
+        await withTimeout(deleteRazorpayPlan(razorpayPlan.id), 10000);
+      } catch (rollbackErr) {
+        console.error(
+          "Failed to delete orphan Razorpay plan after DB error:",
+          rollbackErr
+        );
+      }
+    }
+
     console.error("Razorpay plan creation failed:", err);
-    throw new ApiError(500, `Failed to create plan: ${err.message}`);
+    if (err instanceof ApiError) {
+      throw err;
+    }
+
+    throw new ApiError(500, "Failed to create plan");
   }
 });
 
@@ -130,24 +150,31 @@ export const getAllPlans = asyncHandler(async (req, res) => {
         .json(new ApiResponse(200, [], "No active plans found"));
     }
 
-    const activeIds = new Set(activePlans.map((p) => p.razorpayPlanId));
+    const merged = [];
 
-    const razorpayPlans = await withTimeout(
-      razorpay.plans.all({ count: 50 }),
-      10000
-    );
-
-    const filteredRazorpayPlans = razorpayPlans.items.filter((p) =>
-      activeIds.has(p.id)
-    );
-
-    const merged = filteredRazorpayPlans.map((rp) => {
-      const db = activePlans.find((p) => p.razorpayPlanId === rp.id);
-      return {
-        razorpay: rp,
-        meta: db,
-      };
-    });
+    for (const dbPlan of activePlans) {
+      try {
+        const rp = await withTimeout(
+          razorpay.plans.fetch(dbPlan.razorpayPlanId),
+          10000
+        );
+        merged.push({
+          razorpay: rp,
+          meta: dbPlan,
+        });
+      } catch (fetchErr) {
+        console.error(
+          `Failed to fetch Razorpay plan ${dbPlan.razorpayPlanId}:`,
+          fetchErr?.message ?? fetchErr
+        );
+        merged.push({
+          razorpay: null,
+          meta: dbPlan,
+          razorpayError:
+            fetchErr?.message || "Failed to fetch plan from Razorpay",
+        });
+      }
+    }
 
     return res.status(200).json(
       new ApiResponse(200, merged, "Active plans fetched successfully")
@@ -526,7 +553,15 @@ export const getSubscription = asyncHandler(async (req, res) => {
   } catch (err) {
     console.error("Failed to fetch from Razorpay:", err);
     return res.status(200).json(
-      new ApiResponse(200, subscription, "Subscription fetched from database")
+      new ApiResponse(
+        200,
+        {
+          database: subscription,
+          razorpay: null,
+          razorpayError: err?.message || "Razorpay unavailable",
+        },
+        "Subscription fetched from database (Razorpay unavailable)"
+      )
     );
   }
 });
