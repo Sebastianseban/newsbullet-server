@@ -1,13 +1,14 @@
 import mongoose from "mongoose";
 import dotenv from "dotenv";
 import { User } from "../models/User.js";
+import { logger } from "../utils/logger.js";
 
 dotenv.config();
 
+const log = logger.child({ service: "admin-seed" });
+
 if (process.env.NODE_ENV === "production" && !process.env.ADMIN_PASSWORD) {
-  console.error(
-    "ADMIN_PASSWORD is required when NODE_ENV=production (refusing default credentials)"
-  );
+  log.fatal("admin_password_required_in_production");
   process.exit(1);
 }
 
@@ -15,7 +16,7 @@ const seedAdmin = async () => {
   try {
     // Connect DB
     await mongoose.connect(process.env.MONGODB_URI);
-    console.log("Database connected");
+    log.info("database_connected");
 
     const adminEmail = process.env.ADMIN_EMAIL || "admin@newsbullet.com";
 
@@ -23,7 +24,7 @@ const seedAdmin = async () => {
     const existingAdmin = await User.findOne({ email: adminEmail });
 
     if (existingAdmin) {
-      console.log("Admin user already exists");
+      log.info("admin_user_already_exists");
       process.exit(0);
     }
 
@@ -36,15 +37,14 @@ const seedAdmin = async () => {
       status: "active",
     });
 
-    console.log("Admin user created successfully");
-    console.log({
-      email: adminUser.email,
-      role: adminUser.role,
-    });
+    log.info(
+      { email: adminUser.email, role: adminUser.role },
+      "admin_user_created"
+    );
 
     process.exit(0);
   } catch (error) {
-    console.error("Admin seed failed:", error);
+    log.fatal({ err: error }, "admin_seed_failed");
     process.exit(1);
   }
 };

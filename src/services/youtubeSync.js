@@ -7,6 +7,9 @@ import {
   YOUTUBE_SYNC_MAX_PAGES,
 } from "../config/config.js";
 import { acquireJobLock, releaseJobLock } from "../utils/jobLock.js";
+import { logger } from "../utils/logger.js";
+
+const log = logger.child({ job: "youtube-sync" });
 
 let isSyncRunning = false;
 const JOB_NAME = "youtube-sync";
@@ -14,7 +17,7 @@ const ownerId = `${os.hostname()}-${process.pid}`;
 
 export const syncYouTubeVideos = async () => {
   if (isSyncRunning) {
-    console.log("⚠️ Sync already running. Skipping...");
+    log.warn("sync_already_running_skip");
     return;
   }
 
@@ -28,7 +31,7 @@ export const syncYouTubeVideos = async () => {
     });
 
     if (!lockAcquired) {
-      console.log("⚠️ Sync lock is held by another worker. Skipping...");
+      log.warn("sync_lock_held_skip");
       return;
     }
 
@@ -52,8 +55,9 @@ export const syncYouTubeVideos = async () => {
       const { data } = await client.get(url);
 
       const ops = [];
+      const items = Array.isArray(data?.items) ? data.items : [];
 
-      for (let item of data.items) {
+      for (let item of items) {
         if (item.id.kind !== "youtube#video") continue;
 
         const videoId = item.id.videoId;
@@ -87,15 +91,15 @@ export const syncYouTubeVideos = async () => {
       pageToken = data.nextPageToken;
     }
 
-    console.log(`✅ YouTube Sync Completed — Total Processed: ${count}`);
+    log.info({ videosProcessed: count }, "youtube_sync_completed");
   } catch (error) {
-    console.error("❌ Sync Error:", error.message);
+    log.error({ err: error }, "youtube_sync_error");
   } finally {
     await releaseJobLock({
       jobName: JOB_NAME,
       ownerId,
     }).catch((error) => {
-      console.error("❌ Failed to release sync lock:", error.message);
+      log.error({ err: error }, "youtube_sync_lock_release_failed");
     });
     isSyncRunning = false; // ✅ always release lock
   }

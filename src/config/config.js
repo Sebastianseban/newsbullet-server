@@ -21,6 +21,9 @@ const envCorsOrigins = (process.env.CORS_ORIGINS || "")
   .filter(Boolean);
 
 export const NODE_ENV = process.env.NODE_ENV || "development";
+
+/** Pino level: silent | fatal | error | warn | info | debug | trace (default: info prod, debug dev) */
+export const LOG_LEVEL = process.env.LOG_LEVEL || "";
 export const PORT = Number(process.env.PORT) || 5000;
 export const MONGODB_URI = process.env.MONGODB_URI;
 export const CORS_ORIGINS = envCorsOrigins.length

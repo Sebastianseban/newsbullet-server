@@ -1,4 +1,7 @@
 import { ApiError } from "../utils/ApiError.js";
+import { logger } from "../utils/logger.js";
+
+const log = logger.child({ component: "error_handler" });
 
 const errorHandler = (err, req, res, next) => {
   // ✅ Prevent double-response crashes
@@ -7,16 +10,6 @@ const errorHandler = (err, req, res, next) => {
   }
 
   let error = err;
-
-  // Log error details for debugging
-  console.error("❌ Error occurred:", {
-    message: err.message,
-    stack: err.stack,
-    url: req.originalUrl,
-    method: req.method,
-    ip: req.ip,
-    timestamp: new Date().toISOString(),
-  });
 
   // If it's not already an ApiError, convert it to one
   if (!(error instanceof ApiError)) {
@@ -83,6 +76,27 @@ const errorHandler = (err, req, res, next) => {
     error = new ApiError(statusCode, message, errors, err.stack);
   }
 
+  const statusCode = error.statusCode || 500;
+  const logPayload = {
+    statusCode,
+    method: req.method,
+    url: req.originalUrl,
+    requestId: req.requestId,
+  };
+
+  if (statusCode >= 500) {
+    log.error({ err, ...logPayload }, "request_error");
+  } else if (statusCode >= 400) {
+    log.warn(
+      {
+        ...logPayload,
+        message: error.message,
+        errorName: err?.name,
+      },
+      "request_client_error"
+    );
+  }
+
   const response = {
     success: false,
     message: error.message,
@@ -95,7 +109,7 @@ const errorHandler = (err, req, res, next) => {
     response.originalError = err.name;
   }
 
-  res.status(error.statusCode || 500).json(response);
+  res.status(statusCode).json(response);
 };
 
 // Handle 404 - Not Found

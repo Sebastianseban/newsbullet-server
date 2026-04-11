@@ -6,6 +6,9 @@ import {
 } from "./config/config.js";
 import connectDB from "./db/database.js";
 import mongoose from "mongoose";
+import { logger } from "./utils/logger.js";
+
+const log = logger.child({ service: "api" });
 
 let server;
 let isShuttingDown = false;
@@ -18,7 +21,7 @@ const shutdown = async (signal) => {
   if (isShuttingDown) return;
   isShuttingDown = true;
 
-  console.log(`\n⚠️ Received ${signal}. Starting graceful shutdown...`);
+  log.warn({ signal }, "graceful_shutdown_start");
 
   try {
     if (server) {
@@ -28,18 +31,18 @@ const shutdown = async (signal) => {
           resolve();
         });
       });
-      console.log("✅ HTTP server closed");
+      log.info("http_server_closed");
     }
 
     if (mongoose.connection.readyState === 1) {
       await mongoose.connection.close();
-      console.log("✅ MongoDB connection closed");
+      log.info("mongodb_connection_closed");
     }
 
-    console.log("🛑 Shutdown complete");
+    log.info("shutdown_complete");
     process.exit(0);
   } catch (error) {
-    console.error("❌ Error during graceful shutdown:", error);
+    log.fatal({ err: error }, "graceful_shutdown_failed");
     process.exit(1);
   }
 };
@@ -58,9 +61,13 @@ const startServer = async () => {
         break;
       } catch (error) {
         lastError = error;
-        console.error(
-          `❌ MongoDB bootstrap attempt ${attempt}/${STARTUP_DB_RETRY_ATTEMPTS} failed:`,
-          error.message
+        log.error(
+          {
+            err: error,
+            attempt,
+            maxAttempts: STARTUP_DB_RETRY_ATTEMPTS,
+          },
+          "mongodb_bootstrap_attempt_failed"
         );
 
         if (attempt < STARTUP_DB_RETRY_ATTEMPTS) {
@@ -74,10 +81,10 @@ const startServer = async () => {
     }
 
     server = app.listen(PORT || 5000, () => {
-      console.log(`🚀 Server is running on port ${PORT || 5000}`);
+      log.info({ port: PORT || 5000 }, "server_listening");
     });
   } catch (error) {
-    console.error("❌ Failed to start server:", error);
+    log.fatal({ err: error }, "failed_to_start_server");
     process.exit(1);
   }
 };
@@ -88,11 +95,11 @@ const startServer = async () => {
  * floating promise would be brittle in production. uncaughtException still exits.
  */
 process.on("unhandledRejection", (reason) => {
-  console.error("💥 Unhandled Promise Rejection (non-fatal):", reason);
+  log.error({ reason }, "unhandled_rejection");
 });
 
 process.on("uncaughtException", (error) => {
-  console.error("💥 Uncaught Exception:", error);
+  log.fatal({ err: error }, "uncaught_exception");
   shutdown("uncaughtException");
 });
 

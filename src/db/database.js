@@ -1,5 +1,8 @@
 import mongoose from "mongoose";
 import { MONGODB_URI } from "../config/config.js";
+import { logger } from "../utils/logger.js";
+
+const log = logger.child({ component: "mongodb" });
 
 const connectDB = async () => {
   if (!MONGODB_URI) {
@@ -16,21 +19,22 @@ const connectDB = async () => {
       maxPoolSize: 25,
     });
 
-    console.log(
-      `✅ MongoDB connected successfully | HOST: ${connectionInstance.connection.host}`
+    log.info(
+      { host: connectionInstance.connection.host },
+      "mongodb_connected"
     );
 
     mongoose.connection.on("error", (err) => {
-      console.error("❌ MongoDB runtime error:", err.message);
+      log.error({ err }, "mongodb_runtime_error");
     });
 
     mongoose.connection.on("disconnected", () => {
-      console.warn("⚠️ MongoDB disconnected");
+      log.warn("mongodb_disconnected");
     });
 
     return connectionInstance;
   } catch (error) {
-    console.error("❌ MongoDB connection error:", error.message);
+    log.error({ err: error }, "mongodb_connection_failed");
     throw error;
   }
 };

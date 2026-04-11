@@ -28,6 +28,13 @@ Track fixes from the pre-production failure audit. Check boxes as completed.
 
 - [x] **Remove unused `xml2js`** dependency from `package.json`.
 
+## Logging (implemented)
+
+- **Pino** — JSON logs in production (`NODE_ENV=production`); **pino-pretty** in dev (requires devDependencies).
+- **Env:** `LOG_LEVEL` (e.g. `info`, `warn`, `error`, `debug`). Default: `info` in prod, `debug` locally.
+- **Request correlation:** `X-Request-Id` header (or generated); attached to logs via AsyncLocalStorage; access line per request (`http_request` with `statusCode`, `durationMs`).
+- **Probe noise:** Successful `GET /livez` and `GET /readyz` are not access-logged.
+
 ## Deferred (documented — not automated in code)
 
 - Redis-backed distributed rate limiting.

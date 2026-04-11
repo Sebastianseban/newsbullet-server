@@ -10,6 +10,9 @@ import Plan from "../models/Plan.js";
 import crypto from "crypto";
 import { withTimeout } from "../utils/withTimeout.js";
 import { acquireJobLock, releaseJobLock } from "../utils/jobLock.js";
+import { logger } from "../utils/logger.js";
+
+const log = logger.child({ component: "payments" });
 
 // Helper to convert Razorpay UNIX timestamps (seconds) to JS Date
 const toDate = (ts) => (ts ? new Date(ts * 1000) : null);
@@ -116,14 +119,11 @@ export const createPlan = asyncHandler(async (req, res) => {
       try {
         await withTimeout(deleteRazorpayPlan(razorpayPlan.id), 10000);
       } catch (rollbackErr) {
-        console.error(
-          "Failed to delete orphan Razorpay plan after DB error:",
-          rollbackErr
-        );
+        log.error({ err: rollbackErr }, "failed_to_delete_orphan_razorpay_plan");
       }
     }
 
-    console.error("Razorpay plan creation failed:", err);
+    log.error({ err }, "razorpay_plan_creation_failed");
     if (err instanceof ApiError) {
       throw err;
     }
@@ -163,9 +163,9 @@ export const getAllPlans = asyncHandler(async (req, res) => {
           meta: dbPlan,
         });
       } catch (fetchErr) {
-        console.error(
-          `Failed to fetch Razorpay plan ${dbPlan.razorpayPlanId}:`,
-          fetchErr?.message ?? fetchErr
+        log.error(
+          { err: fetchErr, planId: dbPlan.razorpayPlanId },
+          "failed_to_fetch_razorpay_plan"
         );
         merged.push({
           razorpay: null,
@@ -180,7 +180,7 @@ export const getAllPlans = asyncHandler(async (req, res) => {
       new ApiResponse(200, merged, "Active plans fetched successfully")
     );
   } catch (err) {
-    console.error("Failed to fetch plans:", err);
+    log.error({ err }, "failed_to_fetch_plans");
     throw new ApiError(500, "Failed to fetch plans");
   }
 });
@@ -215,7 +215,7 @@ export const getPlanById = asyncHandler(async (req, res) => {
       )
     );
   } catch (err) {
-    console.error("Failed to fetch plan:", err);
+    log.error({ err }, "failed_to_fetch_plan");
     if (err?.statusCode === 404 || err?.error?.code === "BAD_REQUEST_ERROR") {
       throw new ApiError(404, "Plan not found");
     }
@@ -443,9 +443,9 @@ export const createSubscription = asyncHandler(async (req, res) => {
           10000
         );
       } catch (cancelError) {
-        console.error(
-          "Failed to rollback Razorpay subscription after local error:",
-          cancelError
+        log.error(
+          { err: cancelError },
+          "failed_rollback_razorpay_subscription"
         );
       }
     }
@@ -457,7 +457,7 @@ export const createSubscription = asyncHandler(async (req, res) => {
         jobName: subscriptionLockKey,
         ownerId: lockOwner,
       }).catch((releaseError) => {
-        console.error("Failed to release subscription lock:", releaseError);
+        log.error({ err: releaseError }, "failed_to_release_subscription_lock");
       });
     }
   }
@@ -551,7 +551,7 @@ export const getSubscription = asyncHandler(async (req, res) => {
       )
     );
   } catch (err) {
-    console.error("Failed to fetch from Razorpay:", err);
+    log.error({ err }, "failed_to_fetch_subscription_from_razorpay");
     return res.status(200).json(
       new ApiResponse(
         200,
@@ -626,7 +626,7 @@ export const cancelSubscription = asyncHandler(async (req, res) => {
       )
     );
   } catch (err) {
-    console.error("Cancellation failed:", err);
+    log.error({ err }, "subscription_cancellation_failed");
     throw new ApiError(500, `Failed to cancel subscription: ${err.message}`);
   }
 });
@@ -695,7 +695,7 @@ export const pauseSubscription = asyncHandler(async (req, res) => {
       .status(200)
       .json(new ApiResponse(200, updated, "Subscription paused successfully"));
   } catch (err) {
-    console.error("Pause failed:", err);
+    log.error({ err }, "subscription_pause_failed");
     throw new ApiError(500, `Failed to pause subscription: ${err.message}`);
   }
 });
@@ -764,7 +764,7 @@ export const resumeSubscription = asyncHandler(async (req, res) => {
       .status(200)
       .json(new ApiResponse(200, updated, "Subscription resumed successfully"));
   } catch (err) {
-    console.error("Resume failed:", err);
+    log.error({ err }, "subscription_resume_failed");
     throw new ApiError(500, `Failed to resume subscription: ${err.message}`);
   }
 });
@@ -778,19 +778,19 @@ export const subscriptionWebhook = async (req, res) => {
     const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
 
     if (!webhookSecret) {
-      console.error("⚠️ RAZORPAY_WEBHOOK_SECRET not configured");
+      log.error("razorpay_webhook_secret_missing");
       return res.status(503).json({ received: false, message: "Webhook secret missing" });
     }
 
     const receivedSignature = req.headers["x-razorpay-signature"];
 
     if (!receivedSignature) {
-      console.error("⚠️ Missing webhook signature");
+      log.warn("razorpay_webhook_missing_signature");
       return res.status(400).json({ received: false, message: "Missing signature" });
     }
 
     if (!req.rawBody) {
-      console.error("⚠️ req.rawBody not available. Check webhook middleware.");
+      log.error("razorpay_webhook_missing_raw_body");
       return res.status(400).json({ received: false, message: "Missing raw body" });
     }
 
@@ -800,12 +800,12 @@ export const subscriptionWebhook = async (req, res) => {
       .digest("hex");
 
     if (!hasValidWebhookSignature(receivedSignature, expectedSignature)) {
-      console.error("⚠️ Invalid webhook signature");
+      log.warn("razorpay_webhook_invalid_signature");
       return res.status(401).json({ received: false, message: "Invalid signature" });
     }
 
     const event = req.body.event;
-    console.log(`📥 Webhook received: ${event}`);
+    log.info({ event }, "razorpay_webhook_received");
 
     switch (event) {
       case "subscription.activated":
@@ -849,16 +849,15 @@ export const subscriptionWebhook = async (req, res) => {
         break;
 
       default:
-        console.log(`ℹ️ Unhandled event: ${event}`);
+        log.info({ event }, "razorpay_webhook_unhandled_event");
     }
 
     return res.status(200).json({ received: true });
   } catch (error) {
-    console.error("❌ Webhook processing error:", {
-      message: error.message,
-      stack: error.stack,
-      event: req.body?.event,
-    });
+    log.error(
+      { err: error, event: req.body?.event },
+      "razorpay_webhook_processing_error"
+    );
 
     return res
       .status(500)
@@ -894,15 +893,18 @@ async function handleSubscriptionActivated(payload) {
     );
 
     if (!updated) {
-      console.error(
-        "❌ subscription.activated: Subscription not found for id:",
-        subscription.id
+      log.warn(
+        { subscriptionId: subscription.id },
+        "webhook_subscription_not_found_activated"
       );
     } else {
-      console.log("✅ Subscription activated:", subscription.id);
+      log.info(
+        { subscriptionId: subscription.id },
+        "webhook_subscription_activated"
+      );
     }
   } catch (error) {
-    console.error("❌ Error handling subscription.activated:", error);
+    log.error({ err: error }, "webhook_handle_subscription_activated_error");
     throw error;
   }
 }
@@ -922,15 +924,18 @@ async function handleSubscriptionAuthenticated(payload) {
     );
 
     if (!updated) {
-      console.error(
-        "❌ subscription.authenticated: Subscription not found for id:",
-        subscription.id
+      log.warn(
+        { subscriptionId: subscription.id },
+        "webhook_subscription_not_found_authenticated"
       );
     } else {
-      console.log("✅ Subscription authenticated:", subscription.id);
+      log.info(
+        { subscriptionId: subscription.id },
+        "webhook_subscription_authenticated"
+      );
     }
   } catch (error) {
-    console.error("❌ Error handling subscription.authenticated:", error);
+    log.error({ err: error }, "webhook_handle_subscription_authenticated_error");
     throw error;
   }
 }
@@ -959,15 +964,18 @@ async function handleSubscriptionCharged(payload) {
     );
 
     if (!updated) {
-      console.error(
-        "❌ subscription.charged: Subscription not found for id:",
-        subscription.id
+      log.warn(
+        { subscriptionId: subscription.id },
+        "webhook_subscription_not_found_charged"
       );
     } else {
-      console.log("✅ Subscription charged:", subscription.id);
+      log.info(
+        { subscriptionId: subscription.id },
+        "webhook_subscription_charged"
+      );
     }
   } catch (error) {
-    console.error("❌ Error handling subscription.charged:", error);
+    log.error({ err: error }, "webhook_handle_subscription_charged_error");
     throw error;
   }
 }
@@ -989,15 +997,18 @@ async function handleSubscriptionCompleted(payload) {
     );
 
     if (!updated) {
-      console.error(
-        "❌ subscription.completed: Subscription not found for id:",
-        subscription.id
+      log.warn(
+        { subscriptionId: subscription.id },
+        "webhook_subscription_not_found_completed"
       );
     } else {
-      console.log("✅ Subscription completed:", subscription.id);
+      log.info(
+        { subscriptionId: subscription.id },
+        "webhook_subscription_completed"
+      );
     }
   } catch (error) {
-    console.error("❌ Error handling subscription.completed:", error);
+    log.error({ err: error }, "webhook_handle_subscription_completed_error");
     throw error;
   }
 }
@@ -1019,15 +1030,18 @@ async function handleSubscriptionCancelled(payload) {
     );
 
     if (!updated) {
-      console.error(
-        "❌ subscription.cancelled: Subscription not found for id:",
-        subscription.id
+      log.warn(
+        { subscriptionId: subscription.id },
+        "webhook_subscription_not_found_cancelled"
       );
     } else {
-      console.log("✅ Subscription cancelled:", subscription.id);
+      log.info(
+        { subscriptionId: subscription.id },
+        "webhook_subscription_cancelled"
+      );
     }
   } catch (error) {
-    console.error("❌ Error handling subscription.cancelled:", error);
+    log.error({ err: error }, "webhook_handle_subscription_cancelled_error");
     throw error;
   }
 }
@@ -1051,15 +1065,18 @@ async function handleSubscriptionPaused(payload) {
     );
 
     if (!updated) {
-      console.error(
-        "❌ subscription.paused: Subscription not found for id:",
-        subscription.id
+      log.warn(
+        { subscriptionId: subscription.id },
+        "webhook_subscription_not_found_paused"
       );
     } else {
-      console.log("✅ Subscription paused:", subscription.id);
+      log.info(
+        { subscriptionId: subscription.id },
+        "webhook_subscription_paused"
+      );
     }
   } catch (error) {
-    console.error("❌ Error handling subscription.paused:", error);
+    log.error({ err: error }, "webhook_handle_subscription_paused_error");
     throw error;
   }
 }
@@ -1083,15 +1100,18 @@ async function handleSubscriptionResumed(payload) {
     );
 
     if (!updated) {
-      console.error(
-        "❌ subscription.resumed: Subscription not found for id:",
-        subscription.id
+      log.warn(
+        { subscriptionId: subscription.id },
+        "webhook_subscription_not_found_resumed"
       );
     } else {
-      console.log("✅ Subscription resumed:", subscription.id);
+      log.info(
+        { subscriptionId: subscription.id },
+        "webhook_subscription_resumed"
+      );
     }
   } catch (error) {
-    console.error("❌ Error handling subscription.resumed:", error);
+    log.error({ err: error }, "webhook_handle_subscription_resumed_error");
     throw error;
   }
 }
@@ -1111,15 +1131,15 @@ async function handleSubscriptionPending(payload) {
     );
 
     if (!updated) {
-      console.error(
-        "❌ subscription.pending: Subscription not found for id:",
-        subscription.id
+      log.warn(
+        { subscriptionId: subscription.id },
+        "webhook_subscription_not_found_pending"
       );
     } else {
-      console.log("⏳ Subscription pending:", subscription.id);
+      log.info({ subscriptionId: subscription.id }, "webhook_subscription_pending");
     }
   } catch (error) {
-    console.error("❌ Error handling subscription.pending:", error);
+    log.error({ err: error }, "webhook_handle_subscription_pending_error");
     throw error;
   }
 }
@@ -1140,15 +1160,15 @@ async function handleSubscriptionHalted(payload) {
     );
 
     if (!updated) {
-      console.error(
-        "❌ subscription.halted: Subscription not found for id:",
-        subscription.id
+      log.warn(
+        { subscriptionId: subscription.id },
+        "webhook_subscription_not_found_halted"
       );
     } else {
-      console.log("⚠️ Subscription halted:", subscription.id);
+      log.info({ subscriptionId: subscription.id }, "webhook_subscription_halted");
     }
   } catch (error) {
-    console.error("❌ Error handling subscription.halted:", error);
+    log.error({ err: error }, "webhook_handle_subscription_halted_error");
     throw error;
   }
 }
@@ -1171,16 +1191,19 @@ async function handlePaymentFailed(payload) {
       );
 
       if (!updated) {
-        console.error(
-          "❌ payment.failed: Subscription not found for id:",
-          payment.subscription_id
+        log.warn(
+          { subscriptionId: payment.subscription_id },
+          "webhook_payment_failed_subscription_not_found"
         );
       } else {
-        console.log("❌ Payment failed for subscription:", payment.subscription_id);
+        log.info(
+          { subscriptionId: payment.subscription_id },
+          "webhook_payment_failed_recorded"
+        );
       }
     }
   } catch (error) {
-    console.error("❌ Error handling payment.failed:", error);
+    log.error({ err: error }, "webhook_handle_payment_failed_error");
     throw error;
   }
 }

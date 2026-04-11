@@ -6,6 +6,7 @@ import helmet from "helmet";
 import mongoose from "mongoose";
 
 import { errorHandler, notFound } from "./middleware/errorHandler.middleware.js";
+import { requestContextMiddleware } from "./middleware/requestContext.middleware.js";
 import {
   CORS_ORIGINS,
   TRUST_PROXY,
@@ -25,6 +26,8 @@ const app = express();
 if (TRUST_PROXY) {
   app.set("trust proxy", TRUST_PROXY_HOPS);
 }
+
+app.use(requestContextMiddleware);
 
 /**
  * 🔒 RAW BODY FOR WEBHOOKS (must be before express.json)
