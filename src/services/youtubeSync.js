@@ -15,16 +15,17 @@ let isSyncRunning = false;
 const JOB_NAME = "youtube-sync";
 const ownerId = `${os.hostname()}-${process.pid}`;
 
-export const syncYouTubeVideos = async () => {
+export const syncYouTubeVideos = async ({ throwOnError = false } = {}) => {
   if (isSyncRunning) {
     log.warn("sync_already_running_skip");
-    return;
+    return { skipped: true, reason: "already_running", videosProcessed: 0 };
   }
 
   isSyncRunning = true;
+  let lockAcquired = false;
 
   try {
-    const lockAcquired = await acquireJobLock({
+    lockAcquired = await acquireJobLock({
       jobName: JOB_NAME,
       ownerId,
       ttlMs: YOUTUBE_SYNC_LOCK_TTL_MS,
@@ -32,7 +33,7 @@ export const syncYouTubeVideos = async () => {
 
     if (!lockAcquired) {
       log.warn("sync_lock_held_skip");
-      return;
+      return { skipped: true, reason: "lock_held", videosProcessed: 0 };
     }
 
     const API_KEY = process.env.YOUTUBE_API_KEY;
@@ -92,15 +93,22 @@ export const syncYouTubeVideos = async () => {
     }
 
     log.info({ videosProcessed: count }, "youtube_sync_completed");
+    return { skipped: false, videosProcessed: count };
   } catch (error) {
     log.error({ err: error }, "youtube_sync_error");
+    if (throwOnError) {
+      throw error;
+    }
+    return { skipped: false, error, videosProcessed: 0 };
   } finally {
-    await releaseJobLock({
-      jobName: JOB_NAME,
-      ownerId,
-    }).catch((error) => {
-      log.error({ err: error }, "youtube_sync_lock_release_failed");
-    });
+    if (lockAcquired) {
+      await releaseJobLock({
+        jobName: JOB_NAME,
+        ownerId,
+      }).catch((error) => {
+        log.error({ err: error }, "youtube_sync_lock_release_failed");
+      });
+    }
     isSyncRunning = false; // ✅ always release lock
   }
 };
