@@ -11,7 +11,8 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "worker": "node src/worker.js"
+    "worker": "node src/worker.js",
+    "youtube:sync": "node src/scripts/syncYoutube.js"
   },
   "keywords": [],
   "author": "",
